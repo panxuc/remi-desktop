@@ -1,0 +1,136 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Remi — Spine vs GIF</title>
+<link rel="stylesheet" href="vendor/spine-player.min.css">
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,sans-serif;
+         background:#16161a; color:#e8e8ea; }
+  header { padding:12px 18px; border-bottom:1px solid #2c2c33; }
+  h1 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  header p { margin:0; color:#9a9aa4; font-size:12px; }
+  .wrap { display:grid; grid-template-columns:1fr 1fr; gap:18px; padding:18px; }
+  @media (max-width:900px){ .wrap { grid-template-columns:1fr; } }
+  .pane { border:1px solid #2c2c33; border-radius:10px; overflow:hidden; }
+  .pane h2 { margin:0; padding:8px 12px; font-size:12px; font-weight:600;
+             letter-spacing:.04em; text-transform:uppercase; color:#9a9aa4;
+             border-bottom:1px solid #2c2c33; }
+  #player { width:100%; height:460px; }
+  .gifbox { height:460px; display:grid; place-items:center; }
+  .gifbox img { max-width:100%; max-height:420px; image-rendering:auto; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px;
+         border-top:1px solid #2c2c33; }
+  button { font:inherit; font-size:12px; padding:5px 10px; border-radius:6px;
+           border:1px solid #3a3a44; background:#22222a; color:#e8e8ea; cursor:pointer; }
+  button:hover { background:#2c2c36; }
+  button[aria-pressed="true"] { background:#4c6ef5; border-color:#4c6ef5; color:#fff; }
+  .checker { background-image:
+      linear-gradient(45deg,#333 25%,transparent 25%,transparent 75%,#333 75%),
+      linear-gradient(45deg,#333 25%,transparent 25%,transparent 75%,#333 75%);
+      background-size:20px 20px; background-position:0 0,10px 10px;
+      background-color:#4a4a4a; }
+  .light { background:#f0f0f2; } .magenta { background:#f0f; } .dark { background:#16161a; }
+</style>
+
+<header>
+  <h1>Remi — Spine animations vs. the shipped GIFs</h1>
+  <p>Left: the Spine asset via the official 4.2 runtime. Right: the GIF. Same backdrop on both — pick a pair and compare.</p>
+</header>
+
+<div class="wrap">
+  <div class="pane">
+    <h2>Spine</h2>
+    <div id="player"></div>
+    <div class="row" id="anims"></div>
+  </div>
+  <div class="pane">
+    <h2>GIF</h2>
+    <div class="gifbox checker" id="gifbox"><img id="gif" alt=""></div>
+    <div class="row" id="gifs"></div>
+  </div>
+</div>
+
+<div class="row" style="padding:0 18px 18px;border:0">
+  <span style="color:#9a9aa4;font-size:12px;align-self:center">backdrop:</span>
+  <button data-bg="checker" aria-pressed="true">checker</button>
+  <button data-bg="dark">dark</button>
+  <button data-bg="light">light</button>
+  <button data-bg="magenta">magenta</button>
+</div>
+
+<script src="vendor/spine-player.min.js"></script>
+<script>
+const ASSETS = "../../../assets/";
+const SKEL   = ASSETS + "spine-asset/" + encodeURIComponent("Q蕾米.json");
+const ATLAS  = ASSETS + "spine-asset/leimi.atlas";
+// Durations measured with ffprobe; shown so you can match them against Spine's.
+const GIFS = [
+  ["01writing.gif",          "17f / 1.14s"],
+  ["02write-to-view.gif",    "17f / 1.14s"],
+  ["03pride.gif",            "31f / 2.07s"],
+  ["04thinking.gif",         "41f / 2.74s"],
+  ["05waiting-for-input.gif","41f / 2.74s"],
+  ["06view.gif",             "61f / 4.07s"],
+  ["07other-to-view.gif",    "unreadable"],
+];
+
+let player;
+const animRow = document.getElementById("anims");
+
+new spine.SpinePlayer("player", {
+  jsonUrl: SKEL,
+  atlasUrl: ATLAS,
+  alpha: true,
+  backgroundColor: "#00000000",
+  showControls: true,
+  premultipliedAlpha: false,
+  success: (p) => {
+    player = p;
+    const names = p.skeleton.data.animations
+      .map(a => [a.name, a.duration])
+      .filter(([, d]) => d > 0);
+    for (const [name, dur] of names) {
+      const b = document.createElement("button");
+      b.textContent = `${name} · ${dur.toFixed(2)}s`;
+      b.onclick = () => {
+        p.setAnimation(name, true);
+        [...animRow.children].forEach(c => c.setAttribute("aria-pressed", c === b));
+      };
+      animRow.appendChild(b);
+    }
+    if (animRow.firstChild) animRow.firstChild.click();
+  },
+  error: (p, msg) => {
+    animRow.textContent = "Failed to load: " + msg +
+      "  — are you serving over http:// rather than file://?";
+  },
+});
+
+const gifRow = document.getElementById("gifs");
+const gifImg = document.getElementById("gif");
+for (const [file, meta] of GIFS) {
+  const b = document.createElement("button");
+  b.textContent = `${file.replace(/^\d+/, "").replace(".gif","")} · ${meta}`;
+  b.onclick = () => {
+    // cache-bust so the GIF restarts from frame 0 on every click
+    gifImg.src = ASSETS + file + "?t=" + Date.now();
+    [...gifRow.children].forEach(c => c.setAttribute("aria-pressed", c === b));
+  };
+  gifRow.appendChild(b);
+}
+gifRow.children[5].click();  // 06view — the cleanest duration match to Spine's `a`
+
+document.querySelectorAll("[data-bg]").forEach(btn => {
+  btn.onclick = () => {
+    const bg = btn.dataset.bg;
+    const box = document.getElementById("gifbox");
+    box.className = "gifbox " + bg;
+    const canvas = document.querySelector("#player canvas");
+    if (canvas) canvas.parentElement.className =
+      document.querySelector("#player canvas").parentElement.className;
+    document.getElementById("player").className = bg;
+    document.querySelectorAll("[data-bg]").forEach(o =>
+      o.setAttribute("aria-pressed", o === btn));
+  };
+});
+</script>

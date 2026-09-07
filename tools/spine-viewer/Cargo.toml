@@ -1,0 +1,12 @@
+[package]
+name = "spine-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Throwaway viewer for evaluating the Spine asset against the GIF states."
+
+[dependencies]
+macroquad = "0.4"
+rusty_spine = "0.8"   # 0.8.x == Spine 4.2 runtime; the asset is 4.2.43
+
+[profile.dev]
+opt-level = 1          # spine-c + mesh math are slow in a pure debug build
