@@ -9,6 +9,8 @@ use remi_core::{record, store};
 pub enum Error {
     #[error("`{0}` is not implemented yet")]
     NotImplemented(&'static str),
+    #[error("no session id: pass --session, or run from a harness that sends one on stdin")]
+    NoSession,
     #[error(transparent)]
     Store(#[from] store::Error),
     #[error(transparent)]

@@ -1,13 +1,15 @@
 mod error;
 mod logging;
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::panic;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use remi_core::harness::{self, HookInput};
 use remi_core::record::{SessionId, SessionRecord};
+use remi_core::signal::{SessionContext, Signal};
 use remi_core::state::PetState;
 use remi_core::store::{self, Store, Update};
 
@@ -78,13 +80,11 @@ enum Harness {
     OpenCode,
 }
 
-impl Harness {
-    /// The id written into records. Spelled out rather than taken from the CLI name, so
-    /// renaming a flag value can never change what pets already understand.
-    fn id(self) -> &'static str {
-        match self {
-            Harness::ClaudeCode => "claude-code",
-            Harness::OpenCode => "opencode",
+impl From<Harness> for harness::Harness {
+    fn from(arg: Harness) -> Self {
+        match arg {
+            Harness::ClaudeCode => harness::Harness::ClaudeCode,
+            Harness::OpenCode => harness::Harness::OpenCode,
         }
     }
 }
@@ -93,8 +93,6 @@ impl Harness {
 /// translates its own hooks into these; only the reducer decides which pose they produce.
 #[derive(Clone, Copy, ValueEnum)]
 enum SignalEvent {
-    /// A session opened. Registers it before its first turn.
-    SessionStart,
     /// The user submitted a prompt and the agent started on it. Remi: thinking.
     TurnStart,
     /// The agent called a tool that looks at code without changing it (read, grep, glob).
@@ -102,21 +100,36 @@ enum SignalEvent {
     ReadStart,
     /// The agent called a tool that changes files (edit, write). Remi: writing.
     EditStart,
-    /// A tool call of either kind finished. If an approval prompt was outstanding, Remi returns to the pose
-    /// held before it; otherwise the agent is deciding what to do next. Remi: thinking.
-    /// On harnesses without an "approval granted" event, this is what clears the waiting pose.
+    /// A tool call of either kind finished, whether or not it succeeded. Remi: thinking.
+    /// On harnesses without an "approval answered" event, this is what clears the waiting
+    /// pose.
     ToolEnd,
     /// The agent is blocked on the user approving something or answering a question.
     /// Remi: waiting for input. A second prompt before it clears keeps the original pose to
     /// return to.
     ApprovalAsked,
-    /// The user answered an approval prompt. Same effect as `tool-end`, for harnesses that
-    /// report the answer directly.
+    /// The user answered an approval prompt, before the tool it guarded runs. Remi returns
+    /// to the pose held before the prompt. For harnesses that report the answer directly.
     ApprovalAnswered,
     /// The agent finished its turn. Remi: proud, fading to idle.
     TurnEnd,
-    /// The session closed. Remi: offline, and the session's record is removed.
+    /// The session closed. Its record is removed, and the pet shows it offline.
     SessionEnd,
+}
+
+impl From<SignalEvent> for Signal {
+    fn from(event: SignalEvent) -> Self {
+        match event {
+            SignalEvent::TurnStart => Signal::TurnStart,
+            SignalEvent::ReadStart => Signal::ReadStart,
+            SignalEvent::EditStart => Signal::EditStart,
+            SignalEvent::ToolEnd => Signal::ToolEnd,
+            SignalEvent::ApprovalAsked => Signal::ApprovalAsked,
+            SignalEvent::ApprovalAnswered => Signal::ApprovalAnswered,
+            SignalEvent::TurnEnd => Signal::TurnEnd,
+            SignalEvent::SessionEnd => Signal::SessionEnd,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -252,8 +265,41 @@ fn run(command: Command, env: &Env) -> Result<(), Error> {
     }
 }
 
-fn signal(_args: SignalArgs, _env: &Env) -> Result<(), Error> {
-    Err(Error::NotImplemented("signal"))
+fn signal(args: SignalArgs, env: &Env) -> Result<(), Error> {
+    let harness = harness::Harness::from(args.harness);
+
+    let stdin = io::stdin();
+    // On a terminal, someone is typing the command by hand, and waiting for JSON they will
+    // never send would look like a hang.
+    let input = if stdin.is_terminal() {
+        HookInput::default()
+    } else {
+        // Bad input still leaves the flags and the hook's own directory to go on.
+        harness.read_input(stdin.lock()).unwrap_or_else(|err| {
+            tracing::warn!("ignoring hook input: {err}");
+            HookInput::default()
+        })
+    };
+
+    let session = match args.session {
+        Some(id) => SessionId::new(id)?,
+        None => input.session.ok_or(Error::NoSession)?,
+    };
+    let previous = read_previous(&env.store, &session);
+    let signal = Signal::from(args.event);
+    let context = SessionContext {
+        session,
+        harness: harness.id().to_owned(),
+        ts: env.now,
+        cwd: input.cwd.or_else(|| env.cwd_name.clone()),
+        title: args.title,
+    };
+
+    let update = signal.next_update(previous.as_ref(), context);
+    tracing::debug!("{signal:?}: {update:?}");
+    env.store.apply(update)?;
+    prune(&env.store);
+    Ok(())
 }
 
 fn state(args: StateArgs, env: &Env) -> Result<(), Error> {
@@ -263,7 +309,7 @@ fn state(args: StateArgs, env: &Env) -> Result<(), Error> {
     let mut record = SessionRecord::following(
         previous.as_ref(),
         session,
-        args.harness.id(),
+        harness::Harness::from(args.harness).id(),
         args.pose.into(),
         env.now,
     );
