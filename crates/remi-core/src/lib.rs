@@ -5,6 +5,8 @@
 //! Error messages include their cause (`"reading {path}: {source}"`), because callers log an
 //! error with its `Display` alone.
 
+pub mod harness;
 pub mod record;
+pub mod signal;
 pub mod state;
 pub mod store;
