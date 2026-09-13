@@ -14,12 +14,13 @@ pub struct SessionRecord {
     /// Format version. A reader rejects a version it doesn't know rather than guess at it.
     pub v: u8,
     pub session: SessionId,
-    /// Which harness runs the session, e.g. `claude-code`. A string rather than an enum, so a
-    /// pet still reads records from a harness newer than itself.
-    pub harness: String,
+    /// Which harness runs the session, e.g. `claude-code`, which also names the directory the
+    /// session's file lives in. Not an enum, so a pet still reads records from a harness newer
+    /// than itself.
+    pub harness: HarnessId,
     pub state: PetState,
     /// Unix seconds on the writer's clock. Orders records for the same session; never used to
-    /// judge staleness, since the writer's clock may be skewed against the pet's.
+    /// time anything on the pet, since the writer's clock may be skewed against the pet's.
     pub ts: i64,
     /// The session's own title, when the harness has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,11 +38,11 @@ pub struct SessionRecord {
 
 impl SessionRecord {
     /// A record at the current format version, with every optional field empty.
-    pub fn new(session: SessionId, harness: impl Into<String>, state: PetState, ts: i64) -> Self {
+    pub fn new(session: SessionId, harness: HarnessId, state: PetState, ts: i64) -> Self {
         Self {
             v: VERSION,
             session,
-            harness: harness.into(),
+            harness,
             state,
             ts,
             title: None,
@@ -57,7 +58,7 @@ impl SessionRecord {
     pub fn following(
         previous: Option<&SessionRecord>,
         session: SessionId,
-        harness: impl Into<String>,
+        harness: HarnessId,
         state: PetState,
         ts: i64,
     ) -> Self {
@@ -136,6 +137,54 @@ impl fmt::Display for SessionId {
     }
 }
 
+/// A harness's id as written into records, e.g. `claude-code`, checked to be safe as a
+/// directory name: 1 to [`HarnessId::MAX_LEN`] ASCII lowercase letters, digits or `-`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct HarnessId(String);
+
+impl HarnessId {
+    pub const MAX_LEN: usize = 32;
+
+    pub fn new(id: impl Into<String>) -> Result<Self, Error> {
+        let id = id.into();
+        let valid = !id.is_empty()
+            && id.len() <= Self::MAX_LEN
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if valid {
+            Ok(Self(id))
+        } else {
+            Err(Error::InvalidHarnessId(id))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HarnessId {
+    type Error = Error;
+
+    fn try_from(id: String) -> Result<Self, Error> {
+        Self::new(id)
+    }
+}
+
+impl From<HarnessId> for String {
+    fn from(id: HarnessId) -> Self {
+        id.0
+    }
+}
+
+impl fmt::Display for HarnessId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid session record: {0}")]
@@ -147,6 +196,11 @@ pub enum Error {
         max = SessionId::MAX_LEN
     )]
     InvalidSessionId(String),
+    #[error(
+        "invalid harness id {0:?}: use 1 to {max} ASCII lowercase letters, digits or '-'",
+        max = HarnessId::MAX_LEN
+    )]
+    InvalidHarnessId(String),
 }
 
 #[cfg(test)]
@@ -157,7 +211,7 @@ mod tests {
         SessionRecord {
             v: VERSION,
             session: SessionId::new("1a0e02ad-5127-41ae-b140-139fed68bc31").unwrap(),
-            harness: "claude-code".into(),
+            harness: HarnessId::new("claude-code").unwrap(),
             state: PetState::WaitingForInput,
             ts: 1_757_150_400,
             title: Some("Creating bin from crate libs".into()),
@@ -184,7 +238,7 @@ mod tests {
     fn omits_empty_optional_fields() {
         let record = SessionRecord::new(
             SessionId::new("s1").unwrap(),
-            "opencode",
+            HarnessId::new("opencode").unwrap(),
             PetState::Thinking,
             1,
         );
@@ -224,7 +278,8 @@ mod tests {
     #[test]
     fn a_first_record_starts_now() {
         let id = SessionId::new("s1").unwrap();
-        let record = SessionRecord::following(None, id, "claude-code", PetState::Thinking, 500);
+        let harness = HarnessId::new("claude-code").unwrap();
+        let record = SessionRecord::following(None, id, harness, PetState::Thinking, 500);
         assert_eq!(record.started, Some(500));
         assert_eq!(record.title, None);
     }
@@ -235,7 +290,7 @@ mod tests {
         let record = SessionRecord::following(
             Some(&previous),
             previous.session.clone(),
-            "claude-code",
+            previous.harness.clone(),
             PetState::Proud,
             1_757_150_999,
         );
@@ -254,7 +309,7 @@ mod tests {
         let record = SessionRecord::following(
             Some(&previous),
             previous.session.clone(),
-            "claude-code",
+            previous.harness.clone(),
             PetState::Thinking,
             previous.ts + 60,
         );
@@ -274,5 +329,34 @@ mod tests {
         for bad in ["", "..", "a/b", "a\\b", "a.json", "a b", too_long.as_str()] {
             assert!(SessionId::new(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn validates_harness_ids() {
+        for ok in ["claude-code", "opencode", "codex"] {
+            assert!(HarnessId::new(ok).is_ok(), "{ok}");
+        }
+        let too_long = "a".repeat(HarnessId::MAX_LEN + 1);
+        for bad in [
+            "",
+            "..",
+            "a/b",
+            "a\\b",
+            "Claude-Code",
+            "a.b",
+            "a b",
+            too_long.as_str(),
+        ] {
+            assert!(HarnessId::new(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_harness_ids_when_parsing() {
+        let json = br#"{"v":1,"session":"s1","harness":"../escape","state":"proud","ts":5}"#;
+        assert!(matches!(
+            SessionRecord::from_json(json),
+            Err(Error::Json(_))
+        ));
     }
 }

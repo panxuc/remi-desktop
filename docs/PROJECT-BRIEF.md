@@ -154,17 +154,20 @@ configured connection are listed; only the selected one is drawn. The default se
 Still explicitly NOT aggregating — because only one session is ever rendered, no priority
 merge rule exists anywhere in the system. Selection is the user's, not the app's.
 
-### Staleness over LWT (for v1)
+### No LWT, and no staleness timeout (for v1)
 
 **Important gotcha:** MQTT Last-Will-and-Testament only fires when a *persistent* connection
 drops. A fire-and-forget hook that connects, publishes, and disconnects cleanly will **never**
 trigger LWT. Getting real LWT requires a resident `remi-agent` on the remote holding the
 connection open, with hooks feeding it over a unix socket.
 
-**Decision: skip LWT for v1.** Use a staleness timeout instead — if the retained message's
-`ts` is older than ~60 s, render the sleeping/idle state. Loses the "idle vs host is gone"
-distinction, which probably doesn't matter for a pet. Add the agent later only if that
-ambiguity becomes annoying.
+**Decision: skip LWT for v1 — and don't stand a staleness timeout in for it.** An earlier
+version of this decision showed idle once a record was ~60 s old. That is wrong for a writer
+that only fires on events: while Claude waits on an approval prompt, or runs a long tool,
+nothing is written, so the timeout turns exactly the waiting pose into idle. Decided
+2026-09-14: no written pose times out; only `Proud` fades to `Idle`. A session that dies
+without ending keeps its last pose until a newer session takes over, it is removed, or its
+file is pruned after 24 h. Add the agent later only if that becomes annoying.
 
 ---
 
@@ -182,7 +185,7 @@ Claude Code hooks documentation 2026-09-09 (local binary is v2.1.266).
 | `PostToolUse` | `*` (every tool) | back to whatever preceded the prompt | — |
 | `Stop` | — | `Proud` → decays to `Idle` | `c` |
 | `SessionEnd` | — | `Offline` | — |
-| (staleness > 60 s) | — | `Idle` | `a_win` |
+| (8 s after `Stop`) | — | `Idle` | `a_win` |
 
 ⚠️ **`PostToolUse`, matched on `*`, is what clears the waiting pose, and it is not optional.**
 Claude Code has no "approval granted" hook. The sequence is `PreToolUse` → `Writing`,

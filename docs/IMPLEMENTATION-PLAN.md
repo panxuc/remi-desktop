@@ -2,7 +2,7 @@
 
 > **Relationship to `PROJECT-BRIEF.md`:** the brief records *what was decided and why*,
 > including rejected alternatives. This file records *what we build* — layout, module
-> boundaries, type signatures, wire formats, milestones. When a decision changes, this file
+> boundaries, type signatures, record formats, milestones. When a decision changes, this file
 > is rewritten so it always describes one coherent design; superseded options move to the
 > brief's §6 or disappear. Do not append "(was X, now Y)" notes here.
 >
@@ -22,7 +22,7 @@
 | 5 | Crates | `remi-core` (UI-free, all the logic) · `remi-desktop` · `remi-hook` | §2 |
 | 6 | Message semantics | **Transmit a level, not edges.** "Session S is in state X as of T" | brief §4 |
 | 7 | IPC primitive | A **register**, not a channel — because a pet must see correct state for a session that started before it attached. File + atomic `rename()` | §3.1 |
-| 8 | Where the register lives | `~/.local/state/remi/sessions/<id>.json`, resolved from `$HOME` **only** — never from session env, or writer and reader can silently disagree | §3.2 |
+| 8 | Where the register lives | `~/.local/state/remi/sessions/<harness>/<session>.json`, resolved from `$HOME` **only** — never from session env, or writer and reader can silently disagree | §3.2 |
 | 9 | Not `/tmp` or `$XDG_RUNTIME_DIR` | `/run/user/<uid>` is destroyed when the last login session ends — exactly our detached-zellij case. `/tmp` is tmpfs on some distros and disk on others | §3.2 |
 | 10 | Disk wear | Non-issue: ~0.2 GB/day against a 150–600 TBW rating. Writes are coalesced anyway (skip if same state and `ts` < 20 s old) | §3.3 |
 | 11 | Write path | **One, always the same.** A hook writes the file and exits. No transport is ever in Claude's critical path | §3, §6 |
@@ -32,13 +32,13 @@
 | 15 | MQTT's role | **Optional.** A detached publisher alongside the file write, for hosts the laptop can't reach directly | §6, §8 |
 | 16 | Session selection | **One session rendered at a time**, chosen from a right-click menu on Remi and an identical tray menu. Default "follow most recent" | §5.2 |
 | 17 | Why the tray duplicates the menu | Click-through makes the window unable to receive a right-click. The tray is the only way back | §5.2 |
-| 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock decides staleness. Prevents clock skew faking a dead session | §4.2 |
-| 19 | Staleness | > 60 s → `Idle`. `Proud` decays to `Idle` after 8 s. Chosen over MQTT LWT, which a fire-and-forget hook can never trigger | §4.3, brief §4 |
+| 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock times `Proud` decay and "last heard". Prevents clock skew distorting either | §4.2 |
+| 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
 | 20 | Naming | `remi-desktop`, bundle id `moe.anything.remi`. `touchbar-remi` retired | §11 |
 | 21 | Harness support | Adapters emit a **neutral seven-event vocabulary**; one reducer turns those into poses. No adapter names a pose | §3.5 |
 | 22 | Which harnesses in v1 | **Claude Code and OpenCode.** Codex deferred — pull-only, lossy tool classification, approvals unverified | §3.6, §11 |
 | 23 | Push over pull | Prefer the harness spawning `remi-hook` (a hook, a plugin) over us tailing a log or holding a subscription. Push needs nothing resident and works under all three transports | §3.4 |
-| 24 | Session identity | `(connection, harness, session)`. One box can run two harnesses at once | §4.2, §4.3 |
+| 24 | Session identity | `(connection, harness, session)`. One box can run two harnesses at once, and the state dir, `watch` output and MQTT topic all name the harness | §3.2, §4.2, §4.3 |
 | 25 | Installing on a target | **One `install.sh`**, published with the release. All configuration is `remi-hook setup`, run *on* the target. The pet pipes the script over ssh stdin; the `mqtt` case the user runs by hand | §6.1 |
 | 26 | Distribution | **Public repo, GitHub Actions on a `v*` tag** — `remi-hook` for five targets, `install.sh` + checksums, and both GUI bundles. Unsigned for now | §7 |
 
@@ -66,7 +66,7 @@ attaches late sees the truth, and a **notifier** so it isn't polling:
 |---|---|---|---|
 | Register | the file, this machine | the file, on the remote | retained message on the broker |
 | Notifier | `notify` (FSEvents / inotify / `ReadDirectoryChangesW`) | `remi-hook watch` on the remote, over ssh stdio | MQTT subscription |
-| Pet does | watch the directory | one long-lived `ssh -T <host> remi-hook watch`, read NDJSON | subscribe `remi/+/+/state` |
+| Pet does | watch the directory | one long-lived `ssh -T <host> remi-hook watch`, read NDJSON | subscribe `remi/+/+/+/state` |
 | Extra writer work | none | none | detached child publishes `retain=true` |
 | User must set up | nothing | nothing beyond already being able to `ssh <host>` | a broker |
 | Use it when | Claude is on this laptop | Claude is on a box you can reach | the laptop **can't** reach the box directly, or you want many hosts without many ssh connections |
@@ -112,6 +112,36 @@ remi-desktop ┘
 Nothing in `remi-core` may reference `tauri`, `macroquad`, or any windowing crate. This is
 the invariant that keeps the egui pivot (brief §3) cheap, and it is the one rule worth
 enforcing in review.
+
+### Dependency policy
+
+`[workspace.dependencies]` is **not** how versions get deduplicated — one `Cargo.lock` already
+collapses every semver-compatible requirement to a single build. It exists to stop two members
+drifting onto *incompatible* requirements. So:
+
+1. Used by two or more members → hoist it.
+2. Used by one → leave it in that member. A root manifest listing every dependency in the repo
+   stops being informative.
+3. **Overrides rule 2:** hoist anything that appears in `remi-core`'s *public* API, even at one
+   user, because then version agreement is correctness rather than tidiness.
+
+The test for rule 3 is whether a third-party type or trait crosses the crate boundary.
+`serde` does — `#[derive(Serialize)]` on `SessionRecord` implements *remi-core's* `Serialize`,
+and a member on an incompatible serde sees the type as simply not serializable. `thiserror`
+does not — `#[derive(Error)]` implements `std::error::Error`, which is in std. `tokio` does,
+via the `Sender` in `SessionSource::run` (§4.4), and so does `tokio-util`, via the
+`CancellationToken` beside it. `async-trait` looks like it does and does not:
+it desugars to `Pin<Box<dyn Future>>`, so a mismatch is harmless.
+
+Note that features are additive and `default-features = false` cannot be overridden by a
+member, so that decision has to be made in the workspace entry.
+
+**`Cargo.lock` is committed**, including `tools/spine-viewer`'s. The old "commit for binaries,
+not libraries" advice was about a library's lock being ignored by its consumers, which made
+committing it a way to test against versions your users would never get. It does not apply
+here — `remi-core` is never published, the deliverables are binaries, and `install.sh` puts one
+of them on other people's machines. `--locked` in the release job (§7) is what makes a tag
+rebuildable.
 
 ---
 
@@ -164,8 +194,8 @@ M3, not decided now.**
 Every `remi-hook` invocation, on whatever machine Claude runs on, writes one file:
 
 ```
-$REMI_STATE_DIR                     # override, checked first
-${XDG_STATE_HOME:-~/.local/state}/remi/sessions/<session_id>.json
+$REMI_STATE_DIR                     # override, checked first (tests)
+$HOME/.local/state/remi/sessions/<harness>/<session_id>.json
 ```
 
 **The same path on every OS**, and — more importantly — **resolved from `$HOME` alone, not
@@ -192,16 +222,32 @@ Linux they are tmpfs, so they would cost the disk nothing. The disqualifier is l
 `~/.local/state` has none of these problems and the write cost it avoids is negligible
 (§3.3), so it wins on the only axis that turned out to matter.
 
-One file per Claude session, containing exactly the record from §4.2, written atomically
-(`<id>.json.tmp` → `rename`).
+`$XDG_STATE_HOME` is deliberately **not** consulted, even though `~/.local/state` is its
+default. It is usually unset, and when a user does set it, it is typically in an interactive
+shell rc that a non-interactive `ssh host remi-hook watch` never sources — so honouring it is
+exactly how the writer and the reader end up in different directories.
+
+One directory per harness, named by its id (`claude-code`, `opencode`), holding one file per
+agent session, named by the harness's **full** session id. Harness ids are lowercase letters,
+digits and `-`; session ids are letters, digits, `-` and `_`; so neither can escape the state
+dir. Each file holds exactly the record from §4.2, written atomically inside its harness
+directory (`<id>.json.<pid>.tmp` → `rename`). The pid is in the temp name because two hooks
+for the same session can run at once (parallel tool calls), and a shared temp name would let
+one clobber the other's half-written file.
+
+The harness directory is for people rather than for the code: `ls` shows which harness each
+session belongs to, and the menu can offer a harness before its sessions when there are many.
+Readers skip a file whose record names a different harness or session than its path, so the
+path can always be trusted when debugging.
 
 Lifecycle:
 
 - `SessionStart` / any state hook → create or overwrite.
-- `SessionEnd` → write `state:"offline"` once, then unlink.
-- Every invocation also prunes sibling files whose `ts` is older than 24 h, so a crashed
-  session cannot litter the directory forever. A `readdir` of a directory holding a handful
-  of entries — cheap enough to do unconditionally.
+- `SessionEnd` → unlink. The local watcher and `remi-hook watch` both see the removal, so no
+  `offline` record needs writing first.
+- Every invocation also prunes files, in every harness directory, not modified for 24 h, so
+  a crashed session cannot litter the directory forever. A `readdir` of a few directories
+  holding a handful of entries — cheap enough to do unconditionally.
 
 Because this file is the source of truth, **no transport is in Claude Code's critical path.**
 A hook invocation is one small atomic write and an exit; a broker being down, slow, or absent
@@ -223,12 +269,14 @@ again, for free.
 
 #### Coalescing (do this anyway)
 
-`remi-hook state <x>` **skips the write entirely** if the existing record has the same `state`
-*and* a `ts` newer than 20 s. Consecutive `Read`/`Grep`/`Glob` calls all map to `Viewing`, so
-a burst of tool calls currently rewrites the same value dozens of times.
+`remi-hook signal` **skips the write entirely** if the new record would equal the existing one
+in everything but `ts` (state, `_resume`, `cwd`, `title`, …) *and* the existing `ts` is newer
+than 20 s. Consecutive `Read`/`Grep`/`Glob` calls all map to `Viewing`, so a burst of tool
+calls would otherwise rewrite the same value dozens of times. Comparing the whole record, not
+just `state`, is what keeps a newly learned title or a changed `_resume` from being skipped.
 
-The 20 s ceiling is what keeps this safe: `ts` still advances often enough that the 60 s
-staleness threshold (§4.3) never fires on a live session. The check costs one small read of a
+The 20 s ceiling keeps `ts` honest: the pet orders sessions by it and shows it as "last
+heard", so it never lags a busy session by more than 20 s. The check costs one small read of a
 file that is certain to be in page cache.
 
 ### 3.4 How an event gets out of a harness
@@ -255,7 +303,7 @@ way.
 ║           │  STEP 2 — write a temp file, rename it over the old.   ║
 ║           ▼                                                        ║
 ║   ┌──────────────────────────────────────────────────────┐         ║
-║   │  ~/.local/state/remi/sessions/<session-id>.json      │         ║
+║   │  ~/.local/state/remi/sessions/<harness>/<id>.json    │         ║
 ║   │  one file per agent session, ~200 B, overwritten in  │         ║
 ║   │  place. Holds the CURRENT pose only (§3.1, §3.2).    │         ║
 ║   └───────┬──────────────────────────────────────────────┘         ║
@@ -273,7 +321,7 @@ way.
    │  remi-core, on the laptop, inside the pet                │
    │  · one table keyed by (connection, harness, session)     │
    │  · builds the menu · picks ONE session                   │
-   │  · applies staleness and `Proud` decay (§4.3)            │
+   │  · applies `Proud` decay (§4.3)                          │
    └───────────────────────┬──────────────────────────────────┘
                            ▼  STEP 5 — one pose name
    ┌──────────────────────────────────────────────────────────┐
@@ -312,7 +360,7 @@ Per harness:
 
 Adapters do **not** map their harness's events straight to a `PetState`. If they did, the
 policy "an edit means `Writing`" would be written down once per harness and would drift.
-Instead every adapter produces one of seven neutral events, and one reducer turns those into
+Instead every adapter produces one of eight neutral events, and one reducer turns those into
 poses:
 
 ```
@@ -323,24 +371,38 @@ poses:
 ```rust
 // remi-core/src/signal.rs
 pub enum Signal {
-    SessionStarted { cwd: String },
-    TurnStarted,
-    ToolStarted { class: ToolClass, name: String },
-    ToolEnded { ok: bool },
+    TurnStart,
+    ReadStart,
+    EditStart,
+    ToolEnd,
     ApprovalAsked,
-    ApprovalAnswered { granted: bool },
-    TurnEnded { ok: bool },
-    SessionEnded,
+    ApprovalAnswered,
+    TurnEnd,
+    SessionEnd,
 }
 
-pub enum ToolClass { Read, Edit }   // widen only if a pose ever needs the distinction
+// Everything else the harness reports about the session travels beside the signal.
+pub struct SessionContext { session, harness, ts, cwd, title }
+
+impl Signal {
+    pub fn next_update(self, previous: Option<&SessionRecord>, context: SessionContext) -> Update;
+}
 ```
+
+The variants mirror `remi-hook signal`'s event names one to one, and carry no payload: no pose
+depends on a tool's name or on whether it succeeded. The tool's class is the event itself
+(`ReadStart` / `EditStart`); add a variant only if a pose ever needs another class.
+
+There is no session-started signal. No pose fits a session that has not had a prompt yet
+(`Idle` is never written), and Claude Code's `SessionStart` also fires on compaction, mid-turn,
+where writing anything would clobber the real pose. A session appears in the menu from its
+first prompt.
 
 #### The reducer needs one field of memory
 
-Six of the seven map to a pose with no context. `ApprovalAnswered` does not: after you approve
-an edit, Remi must return to `Writing`, and the approval event does not say what was being
-approved. So the reducer carries exactly one field — the pose it was in when the prompt
+Most signals map to a pose with no context. `ApprovalAnswered` does not: on a harness that
+reports the answer before the guarded tool runs, Remi must return to `Writing` after you
+approve an edit, and the approval event does not say what was being approved. So the reducer carries exactly one field — the pose it was in when the prompt
 arrived — and because a push-shaped writer is a 5 ms process that then dies, that field rides
 in the same JSON file under a writer-private key:
 
@@ -355,27 +417,31 @@ The rules, in full, because "back to `_resume`" is ambiguous otherwise:
 
 | incoming | `_resume` | new pose | new `_resume` |
 |---|---|---|---|
-| `ToolStarted{Read}` | — | `Viewing` | cleared |
-| `ToolStarted{Edit}` | — | `Writing` | cleared |
-| `ApprovalAsked` | — | `WaitingForInput` | **current pose**, stored |
-| `ApprovalAnswered` / `ToolEnded` | set | the stored pose | cleared |
-| `ApprovalAnswered` / `ToolEnded` | empty | `Thinking` | cleared |
-| `TurnStarted` | any | `Thinking` | cleared |
-| `TurnEnded` | any | `Proud` | cleared |
-| `SessionEnded` | any | `Offline` | cleared |
+| `ReadStart` | any | `Viewing` | cleared |
+| `EditStart` | any | `Writing` | cleared |
+| `ApprovalAsked` | empty | `WaitingForInput` | **current pose**, stored |
+| `ApprovalAsked` | set | `WaitingForInput` | kept |
+| `ApprovalAnswered` | set | the stored pose | cleared |
+| `ApprovalAnswered` | empty | `Thinking` | cleared |
+| `ToolEnd` | any | `Thinking` | cleared |
+| `TurnStart` | any | `Thinking` | cleared |
+| `TurnEnd` | any | `Proud` | cleared |
+| `SessionEnd` | any | — | file removed |
 
-The two `ToolEnded` rows are the whole trick. On a harness with only a rising approval edge
-(Claude Code), tool-completion doubles as approval-granted: if a prompt was outstanding, the
-stored pose comes back; if none was, Claude just finished a tool and is deciding what to do
-next, which is `Thinking`. So the same hook serves both purposes and neither case needs the
-harness to tell us which one happened.
+`ToolEnd` always means `Thinking`, prompt or no prompt. A finished tool is not being read or
+written any more; the agent is deciding what to do next. That one rule covers both harness
+shapes. With only a rising approval edge (Claude Code, whose `PostToolUse` fires *after* the
+tool has run), tool completion is what clears the waiting pose. With both edges (OpenCode),
+`ApprovalAnswered` arrives *before* the tool runs and restores the stored pose, and the tool's
+own completion then moves on to `Thinking`. Restoring the stored pose on `ToolEnd` instead
+would leave Claude Code showing `Writing` after an approved edit had already finished.
 
-`ApprovalAsked` arriving while `_resume` is already set is a no-op on the stored value — a
-second prompt during one tool call must not overwrite the pose we have to get back to.
+A second `ApprovalAsked` while `_resume` is set keeps the stored value, so a second prompt
+during one tool call cannot overwrite the pose we have to get back to. `WaitingForInput` itself
+is never stored, or answering could not clear it.
 
-On a harness with both edges (OpenCode) the same table applies unchanged; `ApprovalAnswered`
-is simply a real event there rather than an inference from tool completion. That equivalence
-is what the cross-harness test in §10 asserts.
+The cross-harness test in §10 asserts that the same work, expressed in either harness's
+events, passes through the same poses and ends in the same one.
 
 #### Claude Code
 
@@ -383,13 +449,13 @@ Hook name plus the matcher configured in `~/.claude/settings.json` (§6):
 
 | hook + matcher | neutral event | PetState | Spine |
 |---|---|---|---|
-| `UserPromptSubmit` | `TurnStarted` | `Thinking` | `b` |
-| `PreToolUse` · `Read\|Grep\|Glob` | `ToolStarted{Read}` | `Viewing` | `a` |
-| `PreToolUse` · `Edit\|Write` | `ToolStarted{Edit}` | `Writing` | `d` |
+| `UserPromptSubmit` | `TurnStart` | `Thinking` | `b` |
+| `PreToolUse` · `Read\|Grep\|Glob` | `ReadStart` | `Viewing` | `a` |
+| `PreToolUse` · `Edit\|Write` | `EditStart` | `Writing` | `d` |
 | `Notification` · `permission_prompt\|agent_needs_input\|elicitation_dialog` | `ApprovalAsked` | `WaitingForInput` | `e` |
-| `PostToolUse` | `ApprovalAnswered` / `ToolEnded` | back to `_resume` | — |
-| `Stop` | `TurnEnded` | `Proud` → `Idle` after 8 s | `c` |
-| `SessionEnd` | `SessionEnded` | `Offline` | — |
+| `PostToolUse` | `ToolEnd` | `Thinking` (clears a prompt) | `b` |
+| `Stop` | `TurnEnd` | `Proud` → `Idle` after 8 s | `c` |
+| `SessionEnd` | `SessionEnd` | file removed; pet shows `Offline` | — |
 
 ⚠️ **`PostToolUse` is not optional.** Claude Code has no "approval granted" hook, so without
 it nothing publishes after you approve a prompt: Remi holds the waiting pose while Claude is
@@ -403,14 +469,14 @@ Event names taken from the live API schema of `opencode serve` (verified against
 
 | event | neutral event | PetState | Spine |
 |---|---|---|---|
-| `session.next.prompted` | `TurnStarted` | `Thinking` | `b` |
-| `session.next.tool.called` · `read grep glob bash webfetch websearch` | `ToolStarted{Read}` | `Viewing` | `a` |
-| `session.next.tool.called` · `edit write apply_patch` | `ToolStarted{Edit}` | `Writing` | `d` |
-| `session.next.tool.success` / `.failed` | `ToolEnded` | back to `_resume` | — |
+| `session.next.prompted` | `TurnStart` | `Thinking` | `b` |
+| `session.next.tool.called` · `read grep glob bash webfetch websearch` | `ReadStart` | `Viewing` | `a` |
+| `session.next.tool.called` · `edit write apply_patch` | `EditStart` | `Writing` | `d` |
+| `session.next.tool.success` / `.failed` | `ToolEnd` | `Thinking` | `b` |
 | `permission.v2.asked` · `question.asked` | `ApprovalAsked` | `WaitingForInput` | `e` |
 | `permission.v2.replied` | `ApprovalAnswered` | back to `_resume` | — |
-| `session.idle` | `TurnEnded` | `Proud` → `Idle` | `c` |
-| `session.deleted` | `SessionEnded` | `Offline` | — |
+| `session.idle` | `TurnEnd` | `Proud` → `Idle` | `c` |
+| `session.deleted` | `SessionEnd` | file removed; pet shows `Offline` | — |
 
 OpenCode is the **best-instrumented** of the three: it is the only one with both approval
 edges, so `ApprovalAnswered` is a real event there rather than an inference from `PostToolUse`.
@@ -451,13 +517,13 @@ These are the parts that are expensive to retrofit, so they land in v1 even thou
 harnesses use them:
 
 1. **`harness` is part of session identity**, not a display afterthought — it is in
-   `SessionRecord` (§4.2) and in `SessionKey` (§4.3). One box can run two harnesses at once,
-   and the menu has to say which.
+   `SessionRecord` (§4.2), in the state dir's layout (§3.2) and in `SessionKey` (§4.3). One
+   box can run two harnesses at once, and the menu has to say which.
 2. **The neutral vocabulary and the reducer exist as their own module** (§3.5), even with two
    adapters. A third harness must be a new file under `harness/` and nothing else.
 3. **`remi-hook signal` is the writer's entry point**, not `remi-hook state` (§6). A pushing
    harness only ever names a neutral event; only the reducer names a pose.
-4. **`HarnessCaps` is declared per adapter** and printed by `remi-hook doctor` (§6). Support
+4. **`HarnessCaps` is declared per adapter** and printed by `remi-hook check` (§6). Support
    is not uniform — Codex-with-`notify` cannot produce `WaitingForInput` — and the user should
    be able to see why a pose never fires on a given host rather than filing it as a bug.
 5. **`remi-hook watch` is specified as "the state dir, plus any enabled pull adapters"** even
@@ -473,18 +539,19 @@ crates/remi-core/src/
 ├─ lib.rs
 ├─ state.rs        # PetState
 ├─ signal.rs       # Signal, ToolClass, Reducer — the neutral vocabulary (§3.5)
-├─ wire.rs         # SessionRecord — the on-disk / on-the-wire contract
+├─ record.rs       # SessionRecord, SessionId — the on-disk / over-the-network contract
+├─ store.rs        # the state dir: locate, atomic write, read, list, remove, prune
 ├─ registry.rs     # updates + clock -> menu + rendered state.  Pure. The heart of the crate.
 ├─ config.rs       # Config load/save
 ├─ harness/        # how the register gets WRITTEN — one file per harness
-│  ├─ mod.rs       # HarnessId, HarnessCaps, trait HarnessAdapter
-│  ├─ claude.rs    # argv + stdin -> Signal          (push)
-│  └─ opencode.rs  # plugin argv, or SSE -> Signal   (push, pull fallback)
+│  ├─ mod.rs       # enum Harness, HookInput: which session an event belongs to (+ HarnessCaps, later)
+│  ├─ claude.rs    # stdin JSON -> HookInput {session, cwd, transcript}   (push)
+│  └─ opencode.rs  # not yet: the plugin passes flags, stdin is never read; SSE fallback later
 └─ source/         # how the PET READS — one file per transport
    ├─ mod.rs       # SessionSource trait, SessionUpdate
    ├─ local.rs     # watch the local state dir
    ├─ ssh.rs       # stream from `ssh <host> remi-hook watch`
-   └─ mqtt.rs      # subscribe to remi/+/+/state (rumqttc)
+   └─ mqtt.rs      # subscribe to remi/+/+/+/state (rumqttc)
 ```
 
 `harness/` and `source/` are the two independent axes, and nothing crosses between them: an
@@ -500,41 +567,52 @@ only `source/`.
 pub enum PetState { Thinking, Viewing, Writing, WaitingForInput, Proud, Idle, Offline }
 ```
 
-`Idle` is never published — it is synthesised locally by the registry from staleness.
+`Idle` is never published — it is synthesised locally by the registry from `Proud` decay.
 Keeping it in the same enum means the renderer has exactly one input type.
 
-### 4.2 `wire.rs` — the contract
+### 4.2 `record.rs` — the contract
 
 The same JSON is the file body and the MQTT payload. One schema, one parser, one test suite.
 
 ```json
-{"v":1,"session":"a1b2c3d4","host":"plume","harness":"claude-code","state":"thinking",
- "ts":1757150400,"cwd":"remi-desktop","started":1757150100}
+{"v":1,"session":"1a0e02ad-5127-41ae-b140-139fed68bc31","harness":"claude-code","state":"thinking",
+ "ts":1757150400,"title":"Creating bin from crate libs","cwd":"remi-desktop","started":1757150100}
 ```
 
 | field | type | required | notes |
 |---|---|---|---|
 | `v` | u8 | yes | schema version; a reader ignores records with a `v` it doesn't know |
-| `session` | string | yes | the harness's own session id, truncated to 16 chars |
-| `host` | string | yes | `hostname` on the writing machine; the display label |
-| `harness` | string | yes | `claude-code` \| `opencode` \| `codex`. Part of identity, and a menu label |
+| `session` | string | yes | the harness's own session id, **full length**; letters, digits, `-`, `_`. The pet may shorten it for display when the prefix is unambiguous |
+| `harness` | string | yes | `claude-code` \| `opencode` \| `codex`. Part of identity, names the session file's directory, and a menu label |
 | `state` | string | yes | snake_case `PetState` |
 | `ts` | i64 | yes | unix seconds, **publisher's clock** |
+| `title` | string | no | the session's own title, truncated to 80 chars; absent until the harness has one. Harness placeholders (OpenCode's `New session - <ts>`) are dropped by the adapter, never written |
 | `cwd` | string | no | basename only, for the menu label. Never a full path. |
 | `started` | i64 | no | first-seen ts, for sorting the menu |
 | `_resume` | string | no | **writer-private** (§3.5): the pose to return to when an approval is answered. The pet never reads it |
 
-Unknown fields are ignored on parse (forward compatible). Payload stays under ~200 bytes.
+Unknown fields are ignored on parse (forward compatible). Payload stays under ~300 bytes.
+
+**There is no `host` field.** The machine a session runs on is named by the pet, the way VS
+Code names a remote — never by the writer, which cannot know what the user calls it:
+
+- `local` connection → `local`.
+- `ssh` connection → the `Host` alias from the connection config (what the user types after
+  `ssh`).
+- `mqtt` connection → the name the user gave `remi-hook setup --forward … --name <name>` on
+  that machine, carried as the `<name>` segment of the topic (§6). One broker serves many
+  machines, so this is the one transport where the name has to travel with the record.
 
 **Two clocks, used for two different things** — this is worth stating because getting it
 wrong produces bugs that only appear across machines:
 
 - `ts` (publisher's clock) decides **ordering**: last-write-wins between two records for the
   same session.
-- The receiver's own monotonic clock, stamped when a record *arrives*, decides **staleness**.
+- The receiver's own monotonic clock, stamped when a record *arrives*, times **`Proud` decay**
+  and the menu's "last heard".
 
-So clock skew between the pet's laptop and a remote host cannot make a live session look
-permanently stale.
+So clock skew between the pet's laptop and a remote host can neither cut `Proud` short nor
+make a live session look hours old.
 
 ### 4.3 `registry.rs` — the only real logic
 
@@ -553,7 +631,7 @@ pub struct SessionKey {
 pub struct SessionStatus {
     pub key:      SessionKey,
     pub record:   SessionRecord,
-    pub received: Instant,          // receiver clock — staleness only
+    pub received: Instant,          // receiver clock — Proud decay and "last heard" only
 }
 
 pub enum Selection { Auto, Pinned(SessionKey) }
@@ -575,8 +653,13 @@ impl Registry {
 ```
 
 `effective` applies, in order: no resolved session → `Offline`; record says `Offline` → pass
-through; `Proud` older than `proud_decays` (8 s) → `Idle`; anything older than `stale_after`
-(60 s) → `Idle`; otherwise the state as published.
+through; `Proud` older than `proud_decays` (8 s) → `Idle`; otherwise the state as published.
+
+**No other pose times out.** Hooks write only on events, so a session blocked on an approval
+prompt, or running a long tool, is silent for as long as that lasts — a timeout would turn
+exactly the waiting pose into `Idle`. A session that dies without ending keeps its last pose:
+Auto moves on as soon as any other session is newer, the menu shows how long ago it was last
+heard from, and the 24 h prune (§3.2) removes its file.
 
 `Selection::Auto` resolves to the single most recently active session across all connections.
 It is a deterministic tiebreak on `ts`, **not** a priority merge — the aggregation problem the
@@ -592,7 +675,7 @@ expected state. It is also what makes a transport swap harmless.
 ```rust
 pub enum SessionUpdate {
     Upsert(SessionRecord),
-    Removed(SessionId),
+    Removed { harness: HarnessId, session: SessionId },
     Snapshot(Vec<SessionRecord>),   // full replacement, sent on (re)attach
     ConnectionUp,
     ConnectionLost { reason: String },
@@ -612,7 +695,7 @@ means adding a file here and a config variant — nothing else in the app moves.
 |---|---|---|---|
 | `local` | `notify` watch on the state dir + an initial scan | instant | nothing |
 | `ssh` | long-lived `ssh <host> remi-hook watch`, NDJSON on stdout | instant | nothing beyond being able to `ssh <host>` already |
-| `mqtt` | subscribe `remi/+/+/state`, retained | instant | a broker |
+| `mqtt` | subscribe `remi/+/+/+/state`, retained | instant | a broker |
 
 All configured sources run **concurrently** — that is what populates a menu spanning several
 machines. Only the *selected* session is rendered.
@@ -658,9 +741,9 @@ These differ more than the happy paths do, and the last row is the one that bite
 | | `local` | `ssh` | `mqtt` |
 |---|---|---|---|
 | Pet not running | file keeps updating; pet catches up on launch | same; `watch` dies with the connection and is respawned | broker holds the retained message |
-| Remote unreachable | — | `ConnectionLost` → host greys out, backoff 1 s → 30 s | last retained state still shown, ages to `Idle` at 60 s |
+| Remote unreachable | — | `ConnectionLost` → host greys out, backoff 1 s → 30 s | last retained state still shown |
 | Broker down | — | — | detached publisher fails silently; **the file is still correct**, so falling back to `ssh` loses nothing |
-| Machine crashes mid-session | goes stale → `Idle` at 60 s; pruned at 24 h | same | goes stale → `Idle`, but **is not deleted** |
+| Machine crashes mid-session | last pose kept, menu shows when it was last heard from; pruned at 24 h | same | last pose kept, and **never deleted** |
 
 That last cell is the one real asymmetry between the transports. File registers clean
 themselves up via `unlink`; MQTT's does not, which is why `SessionEnd` must publish an empty
@@ -707,9 +790,9 @@ Dragging: `data-tauri-drag-region` on the root element.
 Right-clicking Remi opens a context menu — the user's model is VS Code's remote picker:
 
 ```
-● plume · remi-desktop          thinking      2s
-  plume · dotfiles              idle          4m
-  local · notes                 waiting       just now
+● plume · Creating bin from crate libs    thinking      2s
+  plume · dotfiles                        idle          4m
+  local · 3f9a1c2e                        waiting       just now
   ─────────────────────────────────────────────
   ✓ Follow most recent            (Selection::Auto)
   ─────────────────────────────────────────────
@@ -719,8 +802,13 @@ Right-clicking Remi opens a context menu — the user's model is VS Code's remot
   Quit
 ```
 
-Built from `Registry::menu()`, rebuilt on every change. Sessions stale beyond `stale_after`
-stay listed but greyed for a grace period so the menu doesn't flicker mid-task; sessions gone
+Each session is labelled `<connection> · <name>`, where the name is the first of these the
+record has: `title`, then `cwd`, then the raw `session` id. The three rows above show one of
+each. The record carries all three as-is and **the pet** picks, so changing the display rule
+never requires upgrading `remi-hook` on the remotes.
+
+Built from `Registry::menu()`, rebuilt on every change. Every row shows how long ago its
+session was last heard from, so one that died without ending is recognisable; sessions gone
 from a `Snapshot`, or `SessionEnd`ed, are removed.
 
 **The tray carries the identical menu.** Not for redundancy: when click-through is on, the
@@ -760,8 +848,8 @@ lower tick rate for static-ish states. Battery impact gets **measured** at M2, n
 about.
 
 Rust → webview: one Tauri event `pet://state` carrying
-`{ state, host, cwd, session, stale }`. Emitted on every registry change **and** on a 1 Hz
-tick, so staleness transitions fire without a message arriving.
+`{ state, host, cwd, session }`. Emitted on every registry change **and** on a 1 Hz
+tick, so `Proud` decays without a message arriving.
 
 ### 5.4 Config
 
@@ -826,29 +914,39 @@ One small binary, deployed to every machine an agent runs on — including the l
 the OpenCode plugin invokes the same binary the same way.
 
 ```sh
-remi-hook signal turn-start                 # a neutral event (§3.5) — the normal entry point
-remi-hook signal tool-start --class edit
-remi-hook signal approval-asked
-remi-hook signal session-end                # write offline, then unlink
-remi-hook state  writing                    # escape hatch: name a pose directly, no reducer
+remi-hook signal turn-start --harness claude-code      # a neutral event (§3.5) — the normal entry point
+remi-hook signal edit-start --harness claude-code      # read-start / edit-start: the tool's class is the event
+remi-hook signal approval-asked --harness claude-code
+remi-hook signal session-end --harness claude-code     # unlink the session's file
+remi-hook signal turn-start --harness opencode --session ses_… --title "…"   # flags override stdin
+remi-hook state writing [--session <id>]    # escape hatch: name a pose directly, no reducer
 remi-hook watch                             # NDJSON on stdout: snapshot, then deltas (ssh source)
 remi-hook snapshot                          # one JSON array of live records, then exit
-remi-hook doctor                            # resolved state dir, config, harness caps
+remi-hook check                             # resolved state dir, config, harness caps; non-zero if broken
 remi-hook setup   --harness claude-code     # write this machine's harness config; idempotent
 remi-hook uninstall                         # remove exactly what setup wrote
 ```
 
 `remi-hook signal <event>` is what harnesses call. It reads stdin only to pick up the session
-id and `cwd` (tolerating stdin being empty or unparseable), applies the reducer from §3.5 —
-which is the only thing in the system that names a pose — and writes the file (§3). The
-`--harness` flag defaults to `claude-code` and is set explicitly by the OpenCode plugin.
+id and `cwd` (tolerating stdin being empty or unparseable, and not reading it at all when it
+is a terminal or the harness is OpenCode, whose plugin passes flags and may leave stdin open),
+applies the reducer from §3.5 —
+which is the only thing in the system that names a pose — and writes the file (§3). `--harness`
+is required: it decides how stdin is read, and `setup` writes it into the harness config so
+nobody types it. `--session` and `--title` override what stdin says; the OpenCode plugin passes
+them, and they make testing by hand easy. The folder name has no flag: it comes from stdin's
+`cwd`, else the directory the hook was started in.
 
 `remi-hook state <pose>` stays as the escape hatch: it skips the reducer and writes the pose
-verbatim. Useful for `doctor`, for testing the renderer, and for any harness that can run a
+verbatim, to the session named by `--session` (default `manual`, so a test pose never
+overwrites a real agent session). No event ever ends that session: clear it with
+`remi-hook signal session-end --harness claude-code --session manual`, or leave it to the
+24 h prune (§3.2).
+Useful for testing the pet end to end, and for any harness that can run a
 command but whose events we have not modelled. It cannot express "return to what you were
 doing", so it is not what an adapter should use.
 
-`remi-hook doctor` prints the `HarnessCaps` of each configured adapter (§3.6). Support is not
+`remi-hook check` prints the `HarnessCaps` of each configured adapter (§3.6). Support is not
 uniform across harnesses, and a pose that never fires should be legible as a capability gap
 rather than a bug.
 
@@ -858,7 +956,8 @@ enabled pull adapters** — v1 enables none, but that is the seam a Codex adapte
 line, flushing each, and exits on EOF of stdin or SIGTERM so a dropped ssh connection reaps it.
 
 If — and only if — an MQTT forwarder is configured on that machine, the same invocation also
-spawns a **detached** child that publishes the record to `remi/<host>/<session>/state` with
+spawns a **detached** child that publishes the record to `remi/<name>/<harness>/<session>/state` (`<name>`
+chosen at setup, §4.2) with
 `retain=true`, QoS 1. Detached so the TLS handshake never blocks the hook; unordered delivery
 is harmless because `ts` decides ordering. On `offline` the child additionally publishes an
 empty retained payload to that topic, which is how MQTT deletes a retained message — without
@@ -872,28 +971,28 @@ Configured in `~/.claude/settings.json` on each machine:
 ```json
 { "hooks": {
   "UserPromptSubmit": [ {
-    "hooks": [ { "type": "command", "command": "remi-hook signal turn-start", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal turn-start --harness claude-code", "timeout": 5 } ]
   } ],
   "PreToolUse": [ {
     "matcher": "Read|Grep|Glob",
-    "hooks": [ { "type": "command", "command": "remi-hook signal tool-start --class read", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal read-start --harness claude-code", "timeout": 5 } ]
   }, {
     "matcher": "Edit|Write",
-    "hooks": [ { "type": "command", "command": "remi-hook signal tool-start --class edit", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal edit-start --harness claude-code", "timeout": 5 } ]
   } ],
   "PostToolUse": [ {
     "matcher": "*",
-    "hooks": [ { "type": "command", "command": "remi-hook signal tool-end", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal tool-end --harness claude-code", "timeout": 5 } ]
   } ],
   "Notification": [ {
     "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
-    "hooks": [ { "type": "command", "command": "remi-hook signal approval-asked", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal approval-asked --harness claude-code", "timeout": 5 } ]
   } ],
   "Stop": [ {
-    "hooks": [ { "type": "command", "command": "remi-hook signal turn-end", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal turn-end --harness claude-code", "timeout": 5 } ]
   } ],
   "SessionEnd": [ {
-    "hooks": [ { "type": "command", "command": "remi-hook signal session-end", "timeout": 5 } ]
+    "hooks": [ { "type": "command", "command": "remi-hook signal session-end --harness claude-code", "timeout": 5 } ]
   } ]
 } }
 ```
@@ -911,7 +1010,7 @@ waiting pose for no reason. Full type list and payload notes in brief §5.
 the only event Claude Code emits after an approval is granted, so it is what clears the
 waiting pose (§3.5); scoping it to `Edit|Write` would leave the pose stuck whenever a prompt
 came from a tool outside that set. Firing it on reads too is harmless — see the reducer rules
-in §3.5, where a `ToolEnded` with no approval outstanding just means Claude is deciding what
+in §3.5, where a `ToolEnd` with no approval outstanding just means Claude is deciding what
 to do next.
 
 ### 6.1 Installation — one script, three ways to run it
@@ -925,7 +1024,8 @@ All configuration is `remi-hook`'s own job, done on the machine it will run on:
 remi-hook setup --harness claude-code    # merge the block above into ~/.claude/settings.json
                 --harness opencode       # install the plugin instead (§3.4)
                 --forward mqtts://…      # optional: write forwarder config, prompt for the password
-                --check                  # then run doctor and print what a pet will see
+                --name plume             #   with --forward: what pets call this machine (topic segment)
+                --check                  # then run check and print what a pet will see
 ```
 
 Nothing ever reaches into a remote's `settings.json` over an ssh heredoc. The laptop's only
@@ -1018,7 +1118,7 @@ the remote is almost always Linux.
   honours `REMI_HOOK_BIN=<path>` to install a locally built binary instead of downloading —
   which is what makes M3 and M4 testable before any release exists.
 - **`remi-hook --version` and the `watch` handshake print the same string**, from
-  `CARGO_PKG_VERSION`. That is the input to the skew check in §6.1. The wire-format `v` (§4.2)
+  `CARGO_PKG_VERSION`. That is the input to the skew check in §6.1. The record-format `v` (§4.2)
   is bumped independently and is what actually gates compatibility.
 - **PR builds run `cargo test` + `cargo clippy` on all three crates and build `remi-hook` for
   every target**, but do *not* build the Tauri bundles. Those are slow and only a tag needs them.
@@ -1073,6 +1173,12 @@ something end-to-end works before any infrastructure exists.
 | **M7** | Autostart on login, both platforms | Reboot, pet is there |
 | **M8** | OpenCode adapter (plugin, SSE fallback) | Run OpenCode and Claude Code on the same box; menu lists both, labelled by harness; each drives the right pose |
 
+**Where we are — 2026-09-14.** **M0 is underway.** `remi-core` has `state`, `record`, `store`,
+`signal` (the reducer) and `harness` (Claude Code stdin parsing), all with tests; `registry` is
+not started. `remi-hook` implements `signal`, `state` and `snapshot`, and `signal` has run live
+under real Claude Code hooks on the Linux dev box. Session titles are not read yet. Nothing
+after M0 has been started.
+
 Later, unsequenced: Codex adapter (§3.6); local IME indicator; phone push on
 `WaitingForInput`; `remi-agent` with a persistent connection for real LWT; `07other-to-view`
 re-fetch or re-export.
@@ -1097,9 +1203,9 @@ the first milestone that needs a public `install.sh` to exist. Everything before
 
 ## 10. Testing
 
-- `remi-core`: real unit tests. `registry.rs` table-driven (staleness, decay, auto-resolution,
+- `remi-core`: real unit tests. `registry.rs` table-driven (`Proud` decay, no timeout on any other pose, auto-resolution,
   a pinned session disappearing, two connections reporting the same host, **one host running
-  two harnesses**). `wire.rs` round-trip + forward-compat (unknown field, unknown `v`).
+  two harnesses**). `record.rs` round-trip + forward-compat (unknown field, unknown `v`).
   `signal.rs` table-driven over (sequence of `Signal`s) → expected poses — in particular that
   an approval answered mid-edit returns to `Writing` and not to `Thinking`, and that the same
   sequence expressed in Claude Code events and in OpenCode events produces the same poses.

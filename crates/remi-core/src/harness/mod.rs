@@ -7,7 +7,7 @@ mod claude;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use crate::record::SessionId;
+use crate::record::{HarnessId, SessionId};
 
 /// An agent harness that runs `remi-hook` on its events.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -19,12 +19,14 @@ pub enum Harness {
 }
 
 impl Harness {
-    /// The id written into records. Pets already understand these, so they never change.
-    pub fn id(self) -> &'static str {
-        match self {
+    /// The id written into records and used as the name of the harness's directory of session
+    /// files. Pets already understand these, so they never change.
+    pub fn id(self) -> HarnessId {
+        let id = match self {
             Harness::ClaudeCode => "claude-code",
             Harness::OpenCode => "opencode",
-        }
+        };
+        HarnessId::new(id).expect("built-in harness ids are valid")
     }
 
     /// Reads what the harness passed on stdin about the session. Empty input is not an error
@@ -93,7 +95,8 @@ mod tests {
 
     #[test]
     fn ids_are_the_documented_ones() {
-        assert_eq!(Harness::ClaudeCode.id(), "claude-code");
-        assert_eq!(Harness::OpenCode.id(), "opencode");
+        // Also proves `id` never panics.
+        assert_eq!(Harness::ClaudeCode.id().as_str(), "claude-code");
+        assert_eq!(Harness::OpenCode.id().as_str(), "opencode");
     }
 }

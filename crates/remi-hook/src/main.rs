@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use remi_core::harness::{self, HookInput};
-use remi_core::record::{SessionId, SessionRecord};
+use remi_core::record::{HarnessId, SessionId, SessionRecord};
 use remi_core::signal::{SessionContext, Signal};
 use remi_core::state::PetState;
 use remi_core::store::{self, Store, Update};
@@ -136,6 +136,8 @@ impl From<SignalEvent> for Signal {
 struct StateArgs {
     pose: Pose,
     /// Session to write. The default keeps a test pose from overwriting a real agent session.
+    /// Nothing ends it: clear it with `signal session-end --harness <harness> --session <id>`,
+    /// or it is pruned after a day without writes.
     #[arg(long, default_value = "manual")]
     session: String,
     #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
@@ -267,6 +269,7 @@ fn run(command: Command, env: &Env) -> Result<(), Error> {
 
 fn signal(args: SignalArgs, env: &Env) -> Result<(), Error> {
     let harness = harness::Harness::from(args.harness);
+    let harness_id = harness.id();
 
     let stdin = io::stdin();
     // On a terminal, someone is typing the command by hand, and waiting for JSON they will
@@ -285,11 +288,11 @@ fn signal(args: SignalArgs, env: &Env) -> Result<(), Error> {
         Some(id) => SessionId::new(id)?,
         None => input.session.ok_or(Error::NoSession)?,
     };
-    let previous = read_previous(&env.store, &session);
+    let previous = read_previous(&env.store, &harness_id, &session);
     let signal = Signal::from(args.event);
     let context = SessionContext {
         session,
-        harness: harness.id().to_owned(),
+        harness: harness_id,
         ts: env.now,
         cwd: input.cwd.or_else(|| env.cwd_name.clone()),
         title: args.title,
@@ -303,13 +306,14 @@ fn signal(args: SignalArgs, env: &Env) -> Result<(), Error> {
 }
 
 fn state(args: StateArgs, env: &Env) -> Result<(), Error> {
+    let harness = harness::Harness::from(args.harness).id();
     let session = SessionId::new(args.session)?;
-    let previous = read_previous(&env.store, &session);
+    let previous = read_previous(&env.store, &harness, &session);
 
     let mut record = SessionRecord::following(
         previous.as_ref(),
         session,
-        harness::Harness::from(args.harness).id(),
+        harness,
         args.pose.into(),
         env.now,
     );
@@ -326,7 +330,7 @@ fn watch() -> Result<(), Error> {
 
 fn snapshot(env: &Env) -> Result<(), Error> {
     let mut records = env.store.list()?;
-    records.sort_by(|a, b| a.session.cmp(&b.session));
+    records.sort_by(|a, b| (&a.harness, &a.session).cmp(&(&b.harness, &b.session)));
 
     let json = serde_json::to_string(&records).expect("session records always serialize");
     writeln!(io::stdout().lock(), "{json}").map_err(Error::Stdout)
@@ -346,8 +350,8 @@ fn uninstall(_purge: bool) -> Result<(), Error> {
 
 /// The session's current record, if it has a readable one. An unreadable file is treated as
 /// no record: the write that follows replaces it, which is better than never writing again.
-fn read_previous(store: &Store, session: &SessionId) -> Option<SessionRecord> {
-    store.read(session).unwrap_or_else(|err| {
+fn read_previous(store: &Store, harness: &HarnessId, session: &SessionId) -> Option<SessionRecord> {
+    store.read(harness, session).unwrap_or_else(|err| {
         tracing::warn!("ignoring unreadable previous record: {err}");
         None
     })

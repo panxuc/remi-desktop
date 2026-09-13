@@ -5,13 +5,13 @@
 
 use std::time::Duration;
 
-use crate::record::{SessionId, SessionRecord};
+use crate::record::{HarnessId, SessionId, SessionRecord};
 use crate::state::PetState;
 use crate::store::Update;
 
 /// How long an unchanged record may go without being rewritten. Bursts of identical signals
-/// (a run of reads) then cost one write, while `ts` still advances well inside the 60 s after
-/// which the pet treats a silent session as idle.
+/// (a run of reads) then cost one write, while `ts` — which the pet orders sessions by and
+/// shows as when each was last heard from — still lags the truth by at most this much.
 pub const REWRITE_UNCHANGED_AFTER: Duration = Duration::from_secs(20);
 
 /// Something an agent harness just did, named so it means the same thing for every harness.
@@ -71,7 +71,12 @@ impl Signal {
             // The guarded tool is about to run, so go back to what it was doing.
             Signal::ApprovalAnswered => (resume.unwrap_or(PetState::Thinking), None),
             Signal::TurnEnd => (PetState::Proud, None),
-            Signal::SessionEnd => return Update::Remove(context.session),
+            Signal::SessionEnd => {
+                return Update::Remove {
+                    harness: context.harness,
+                    session: context.session,
+                };
+            }
         };
 
         let mut record = SessionRecord::following(
@@ -110,8 +115,8 @@ impl Signal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionContext {
     pub session: SessionId,
-    /// The harness id written into records, e.g. `claude-code`.
-    pub harness: String,
+    /// The harness the session runs in, e.g. `claude-code`.
+    pub harness: HarnessId,
     /// Unix seconds when the signal was received.
     pub ts: i64,
     /// Last component of the session's working directory.
@@ -132,7 +137,7 @@ mod tests {
     fn context(ts: i64) -> SessionContext {
         SessionContext {
             session: SessionId::new("s1").unwrap(),
-            harness: "claude-code".into(),
+            harness: HarnessId::new("claude-code").unwrap(),
             ts,
             cwd: Some("remi-desktop".into()),
             title: None,
@@ -140,8 +145,12 @@ mod tests {
     }
 
     fn record(state: PetState, resume: Option<PetState>) -> SessionRecord {
-        let mut record =
-            SessionRecord::new(SessionId::new("s1").unwrap(), "claude-code", state, T0);
+        let mut record = SessionRecord::new(
+            SessionId::new("s1").unwrap(),
+            HarnessId::new("claude-code").unwrap(),
+            state,
+            T0,
+        );
         record.resume = resume;
         record.cwd = Some("remi-desktop".into());
         record.started = Some(T0);
@@ -164,7 +173,7 @@ mod tests {
             match signal.next_update(current.as_ref(), context(T0 + i as i64)) {
                 Update::Write(record) => current = Some(record),
                 Update::Skip => {}
-                Update::Remove(_) => current = None,
+                Update::Remove { .. } => current = None,
             }
             poses.push(current.as_ref().map_or(Offline, |record| record.state));
         }
@@ -253,7 +262,10 @@ mod tests {
         let previous = record(Thinking, None);
         assert_eq!(
             SessionEnd.next_update(Some(&previous), context(T0 + 60)),
-            Update::Remove(SessionId::new("s1").unwrap())
+            Update::Remove {
+                harness: HarnessId::new("claude-code").unwrap(),
+                session: SessionId::new("s1").unwrap(),
+            }
         );
         assert_eq!(poses(&[TurnStart, SessionEnd]), [Thinking, Offline]);
     }
@@ -266,7 +278,7 @@ mod tests {
         let next = written(TurnStart.next_update(None, context));
 
         assert_eq!(next.session.as_str(), "s1");
-        assert_eq!(next.harness, "claude-code");
+        assert_eq!(next.harness.as_str(), "claude-code");
         assert_eq!(next.ts, T0);
         assert_eq!(next.started, Some(T0));
         assert_eq!(next.cwd.as_deref(), Some("remi-desktop"));
@@ -325,7 +337,7 @@ mod tests {
         ));
 
         let mut other_harness = context(T0 + 1);
-        other_harness.harness = "opencode".into();
+        other_harness.harness = HarnessId::new("opencode").unwrap();
         assert!(matches!(
             ReadStart.next_update(Some(&previous), other_harness),
             Update::Write(_)
