@@ -7,4 +7,5 @@ edition.workspace = true
 remi-core = { path = "../remi-core" }
 
 # tauri / tauri-build are added on the Mac — they stay local to this crate, since nothing
-# else in the workspace may depend on them (plan §2, the egui-pivot invariant).
+# else in the workspace may depend on them. Keeping remi-core free of any UI crate is what
+# lets the GUI toolkit be swapped (e.g. to egui) without touching the logic.

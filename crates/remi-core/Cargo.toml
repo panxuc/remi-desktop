@@ -7,10 +7,11 @@ edition.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
 
 # Internal to remi-core: none of these appear in its public API, so nothing else in the
 # workspace has to agree on their versions.
 async-trait = "0.1.92"
 directories = "6.0.0"
 notify = "8.2.0"
-thiserror = "2.0.20"
