@@ -1,3 +1,5 @@
+use remi_core::{record, store};
+
 /// Everything that can make a `remi-hook` command fail.
 ///
 /// Errors are logged with their `Display` alone, which prints only the outermost message.
@@ -7,4 +9,10 @@
 pub enum Error {
     #[error("`{0}` is not implemented yet")]
     NotImplemented(&'static str),
+    #[error(transparent)]
+    Store(#[from] store::Error),
+    #[error(transparent)]
+    Record(#[from] record::Error),
+    #[error("writing to stdout: {0}")]
+    Stdout(#[source] std::io::Error),
 }

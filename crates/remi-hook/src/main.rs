@@ -1,10 +1,15 @@
 mod error;
 mod logging;
 
+use std::io::{self, Write};
 use std::panic;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use remi_core::record::{SessionId, SessionRecord};
+use remi_core::state::PetState;
+use remi_core::store::{self, Store, Update};
 
 use crate::error::Error;
 
@@ -39,6 +44,14 @@ enum Command {
     },
 }
 
+impl Command {
+    /// Commands a harness may call. These always exit 0: a non-zero exit from a `PreToolUse`
+    /// hook can block the tool call, and a pet must never be able to stop the agent working.
+    fn is_harness_path(&self) -> bool {
+        matches!(self, Command::Signal(_) | Command::State(_))
+    }
+}
+
 // The session's folder is not a flag: it comes from the `cwd` in the harness's stdin JSON,
 // falling back to the directory the hook was started in.
 #[derive(Args)]
@@ -63,6 +76,17 @@ enum Harness {
     /// OpenCode, through a plugin.
     #[value(name = "opencode")]
     OpenCode,
+}
+
+impl Harness {
+    /// The id written into records. Spelled out rather than taken from the CLI name, so
+    /// renaming a flag value can never change what pets already understand.
+    fn id(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => "claude-code",
+            Harness::OpenCode => "opencode",
+        }
+    }
 }
 
 /// A harness event, named so it means the same thing for every harness. Each adapter
@@ -101,6 +125,8 @@ struct StateArgs {
     /// Session to write. The default keeps a test pose from overwriting a real agent session.
     #[arg(long, default_value = "manual")]
     session: String,
+    #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+    harness: Harness,
 }
 
 /// A pose a session record can carry. Idle is not one of them: the pet shows idle on its
@@ -121,6 +147,19 @@ enum Pose {
     Offline,
 }
 
+impl From<Pose> for PetState {
+    fn from(pose: Pose) -> Self {
+        match pose {
+            Pose::Thinking => PetState::Thinking,
+            Pose::Viewing => PetState::Viewing,
+            Pose::Writing => PetState::Writing,
+            Pose::WaitingForInput => PetState::WaitingForInput,
+            Pose::Proud => PetState::Proud,
+            Pose::Offline => PetState::Offline,
+        }
+    }
+}
+
 #[derive(Args)]
 struct SetupArgs {
     #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
@@ -131,6 +170,33 @@ struct SetupArgs {
     /// Run `check` afterwards.
     #[arg(long)]
     check: bool,
+}
+
+/// What commands read from the outside world, gathered once in `main` so that handlers take
+/// it as input instead of reaching for the environment, the clock, or the process themselves.
+struct Env {
+    store: Store,
+    /// Unix seconds when the command started.
+    now: i64,
+    /// Last component of the directory the hook was started in. Never the full path, which
+    /// would reveal where the user keeps things.
+    cwd_name: Option<String>,
+}
+
+impl Env {
+    fn capture() -> Result<Self, Error> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let cwd_name = std::env::current_dir()
+            .ok()
+            .and_then(|dir| Some(dir.file_name()?.to_string_lossy().into_owned()));
+        Ok(Self {
+            store: Store::locate()?,
+            now,
+            cwd_name,
+        })
+    }
 }
 
 fn main() -> ExitCode {
@@ -150,56 +216,74 @@ fn main() -> ExitCode {
         }
     };
 
-    match cli.command {
-        Command::Signal(args) => never_fail(|| signal(args)),
-        Command::State(args) => never_fail(|| state(args)),
-        Command::Watch => report(watch()),
-        Command::Snapshot => report(snapshot()),
-        Command::Check => report(check()),
-        Command::Setup(args) => report(setup(args)),
-        Command::Uninstall { purge } => report(uninstall(purge)),
+    let harness_path = cli.command.is_harness_path();
+    let outcome =
+        panic::catch_unwind(move || Env::capture().and_then(|env| run(cli.command, &env)));
+    let succeeded = match outcome {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) => {
+            tracing::error!("command failed: {err}");
+            false
+        }
+        Err(_) => false, // the panic hook has already printed the message
+    };
+    if succeeded || harness_path {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 
+/// The same commands as [`Command::is_harness_path`], matched on raw arguments because a
+/// failed parse never produces a `Command`.
 fn invoked_by_harness() -> bool {
     matches!(std::env::args().nth(1).as_deref(), Some("signal" | "state"))
 }
 
-/// Exit code is always 0 on the harness path: a non-zero exit from a `PreToolUse` hook can
-/// block the tool call, and a pet must never be able to stop the agent working.
-fn never_fail(f: impl FnOnce() -> Result<(), Error> + panic::UnwindSafe) -> ExitCode {
-    match panic::catch_unwind(f) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => tracing::error!("command failed: {err}"),
-        Err(_) => {} // the panic hook has already printed the message
-    }
-    ExitCode::SUCCESS
-}
-
-fn report(result: Result<(), Error>) -> ExitCode {
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            tracing::error!("command failed: {err}");
-            ExitCode::FAILURE
-        }
+fn run(command: Command, env: &Env) -> Result<(), Error> {
+    match command {
+        Command::Signal(args) => signal(args, env),
+        Command::State(args) => state(args, env),
+        Command::Watch => watch(),
+        Command::Snapshot => snapshot(env),
+        Command::Check => check(),
+        Command::Setup(args) => setup(args),
+        Command::Uninstall { purge } => uninstall(purge),
     }
 }
 
-fn signal(_args: SignalArgs) -> Result<(), Error> {
+fn signal(_args: SignalArgs, _env: &Env) -> Result<(), Error> {
     Err(Error::NotImplemented("signal"))
 }
 
-fn state(_args: StateArgs) -> Result<(), Error> {
-    Err(Error::NotImplemented("state"))
+fn state(args: StateArgs, env: &Env) -> Result<(), Error> {
+    let session = SessionId::new(args.session)?;
+    let previous = read_previous(&env.store, &session);
+
+    let mut record = SessionRecord::following(
+        previous.as_ref(),
+        session,
+        args.harness.id(),
+        args.pose.into(),
+        env.now,
+    );
+    record.cwd = env.cwd_name.clone();
+
+    env.store.apply(Update::Write(record))?;
+    prune(&env.store);
+    Ok(())
 }
 
 fn watch() -> Result<(), Error> {
     Err(Error::NotImplemented("watch"))
 }
 
-fn snapshot() -> Result<(), Error> {
-    Err(Error::NotImplemented("snapshot"))
+fn snapshot(env: &Env) -> Result<(), Error> {
+    let mut records = env.store.list()?;
+    records.sort_by(|a, b| a.session.cmp(&b.session));
+
+    let json = serde_json::to_string(&records).expect("session records always serialize");
+    writeln!(io::stdout().lock(), "{json}").map_err(Error::Stdout)
 }
 
 fn check() -> Result<(), Error> {
@@ -212,4 +296,23 @@ fn setup(_args: SetupArgs) -> Result<(), Error> {
 
 fn uninstall(_purge: bool) -> Result<(), Error> {
     Err(Error::NotImplemented("uninstall"))
+}
+
+/// The session's current record, if it has a readable one. An unreadable file is treated as
+/// no record: the write that follows replaces it, which is better than never writing again.
+fn read_previous(store: &Store, session: &SessionId) -> Option<SessionRecord> {
+    store.read(session).unwrap_or_else(|err| {
+        tracing::warn!("ignoring unreadable previous record: {err}");
+        None
+    })
+}
+
+/// Every write also sweeps out sessions that died without ending. A failure here is only
+/// logged: it must never cost the write that just succeeded.
+fn prune(store: &Store) {
+    match store.prune(store::PRUNE_AFTER) {
+        Ok(0) => {}
+        Ok(removed) => tracing::debug!("pruned {removed} stale session files"),
+        Err(err) => tracing::warn!("pruning stale sessions failed: {err}"),
+    }
 }

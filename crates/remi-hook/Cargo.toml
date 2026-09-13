@@ -9,5 +9,8 @@ remi-core = { path = "../remi-core" }
 clap.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tracing = "0.1.44"
+tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile.workspace = true
