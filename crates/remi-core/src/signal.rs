@@ -64,6 +64,11 @@ impl Signal {
             // A tool that has finished is never still being read or written, even if a prompt
             // held it up: the agent is deciding what to do next. This is also what clears the
             // prompt on harnesses that never report the answer.
+            //
+            // This clears `Viewing`/`Writing` the instant the tool returns, so a tool that runs for
+            // only a few milliseconds never holds its pose long enough to be seen: a small read or
+            // edit lasts 15-18 ms, under the file watcher's own notification delay. Only tools slow
+            // enough to be worth watching show a pose of their own.
             Signal::ToolEnd => (PetState::Thinking, None),
             // A second prompt while one is outstanding keeps the pose from before the first.
             // Waiting is never a pose to return to, or answering could not clear it.

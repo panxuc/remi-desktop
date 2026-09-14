@@ -1,5 +1,5 @@
-// The GIF fallback (plan §0 #3, §5.3). Not expected to be used: M1 proved a transparent WebGL
-// canvas composites inside a transparent webview, which is the only thing this exists for.
+// The GIF fallback. Not expected to be used: a transparent WebGL canvas does composite inside the
+// transparent webview, which is the only thing this exists for.
 //
 // It is structurally worse and the difference is visible: GIF carries 1-bit transparency, so
 // anti-aliased edges are matted against whatever the file was exported over and fringe on a
@@ -7,18 +7,17 @@
 // opacity crossfade between two unrelated bitmaps, which always reads as a dissolve rather than
 // as Remi moving. Kept only so that one failure mode has an answer.
 
-// Staged by build.rs under their original names (plan §5.5), but only when the `gif-fallback`
-// cargo feature is on — the art is 8.5 MiB and everything under `ui/` is embedded in the binary.
-// This module ships unconditionally; its art does not. The Spine equivalence each file stands in
-// for is in brief §2.1.
+// Staged by build.rs under their original names, but only when the `gif-fallback` cargo feature is
+// on — the art is 8.5 MiB and everything under `ui/` is embedded in the binary. This module ships
+// unconditionally; its art does not.
 const GIF = {
   writing: "01writing.gif",
-  // Same file as Writing, matching the Spine path — `02` is `d_win`, which was tried and dropped.
+  // Same file as Writing, matching the Spine map.
   replying: "01writing.gif",
   proud: "03pride.gif",
   thinking: "04thinking.gif",
   waiting_for_input: "05waiting-for-input.gif",
-  // Swapped to match the Spine map: `07` is `a_win` (with pen) and `06` is `a` (without).
+  // Matching the Spine map: `07` is the with-pen variant and `06` the empty-handed one.
   viewing: "07view-with-pen.gif",
   idle: "06view.gif",
   offline: null,
@@ -45,7 +44,7 @@ export async function mount(rootEl) {
 
   img = document.createElement("img");
   img.alt = "";
-  // `07` is 257×290 where the rest are 360×360, so the frame size cannot be assumed (brief §2.1).
+  // `07` is 257×290 where the rest are 360×360, so one frame size cannot be assumed.
   img.style.objectFit = "contain";
   rootEl.appendChild(img);
 }

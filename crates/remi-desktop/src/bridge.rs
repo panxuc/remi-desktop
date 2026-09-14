@@ -1,5 +1,5 @@
-//! Registry → webview (plan §5.3). One thread owns the [`Registry`]; sources, the menu and a
-//! clock all reach it by channel, so nothing is ever locked and the registry needs no `Sync`.
+//! Registry → webview. One thread owns the [`Registry`]; sources, the menu and a clock all reach
+//! it by channel, so nothing is ever locked and the registry needs no `Sync`.
 //!
 //! What reaches the webview is one `pet://state` event carrying the session Remi should show, and
 //! it is emitted only when that changes. The 1 Hz tick exists because two of the registry's rules
@@ -30,7 +30,7 @@ const TICK: Duration = Duration::from_secs(1);
 const EVENT: &str = "pet://state";
 
 /// What the webview is told. `label` is resolved by the registry — title, else folder, else id —
-/// so changing that rule never needs a new `remi-hook` on a remote (plan §5.2).
+/// so changing that rule never needs a new `remi-hook` on a remote.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct StatePayload {
     pub state: PetState,
@@ -91,9 +91,8 @@ impl Bridge {
     /// The current pose, for a webview that has just finished loading.
     ///
     /// Tauri drops an event nobody is listening for yet, so a pet whose first snapshot arrives
-    /// before `ui/app.js` subscribes would sit on `Idle` until the next thing Claude did. This is
-    /// the same reason §3.1 made the session store a register rather than a channel: a reader that
-    /// attaches late must still be able to see the current value.
+    /// before `ui/app.js` subscribes would sit on `Idle` until the next thing the agent did. The
+    /// last payload is kept here so a reader that attaches late can still see the current value.
     pub fn current(&self) -> StatePayload {
         self.latest.lock().expect("bridge mutex poisoned").clone()
     }

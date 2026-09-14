@@ -1,6 +1,6 @@
 # Vendored runtime
 
-No build step (plan §0 #4), so third-party JS is committed here rather than installed.
+There is no build step, so third-party JS is committed here rather than installed.
 
 | file | what | provenance |
 |---|---|---|

@@ -76,8 +76,8 @@ Exactly **one** slot uses additive blending (the `light` effect).
 
 | animation | duration | content | PetState |
 |---|---|---|---|
-| `a` | 4.00 s | read / idle | `Viewing` |
-| `a_win` | 5.27 s | read / idle **with a pen** — reads as picking the pen up | `Idle` |
+| `a` | 4.00 s | read / idle, empty-handed | `Idle` |
+| `a_win` | 5.27 s | read / idle **with a pen** — reads as picking the pen up | `Viewing` |
 | `b` | 5.33 s | thinking, with pen | `Thinking` |
 | `c` | 2.00 s | pride | `Proud` |
 | `d` | 2.13 s | writing, continuous | `Writing` |
@@ -193,16 +193,16 @@ Code hooks reference, changelog and settings schema 2026-09-14 (local binary is 
 | Claude Code hook | matcher | PetState | Spine |
 |---|---|---|---|
 | `UserPromptSubmit` | — | `Thinking` | `b` |
-| `PreToolUse` | `Read\|Grep\|Glob` | `Viewing` | `a` |
+| `PreToolUse` | `Read\|Grep\|Glob` | `Viewing` | `a_win` |
 | `PreToolUse` | `Edit\|Write` | `Writing` | `d` |
-| `MessageDisplay` | — | `Replying` | not chosen yet |
+| `MessageDisplay` | — | `Replying` | `d` (same as `Writing`) |
 | `PermissionRequest` | `*` | `WaitingForInput` | `e` |
 | `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog\|elicitation_url_dialog` | `WaitingForInput` | `e` |
 | `PostToolUse` | `*` (every tool) | `Thinking` (clears a prompt) | `b` |
 | `PostToolUseFailure` | `*` | `Thinking` | `b` |
 | `Stop` / `StopFailure` | — | `Proud` → decays to `Idle` | `c` |
 | `SessionEnd` | — | `Offline` | — |
-| (8 s after `Stop`) | — | `Idle` | `a_win` |
+| (8 s after `Stop`) | — | `Idle` | `a` |
 
 `MessageDisplay` (Claude Code 2.1.152+) runs while reply text streams to the screen, and never
 for hidden thinking, so it tells `Replying` apart from `Thinking`. `PermissionRequest` fires the
@@ -339,8 +339,9 @@ broker). This section is left as a pointer only so the two files cannot drift.
 - Where exactly does Mosquitto run, and what auth/TLS setup? (user has domains + home server)
 - Topic scheme final form — is `remi/<host>/state` enough, or does it need per-session
   granularity for multiple concurrent Claude sessions on one host?
-- Click-through vs draggable — probably draggable, with a modifier or tray toggle for
-  click-through. Undecided.
+- ~~Click-through vs draggable~~ ✅ Resolved 2026-09-14: **draggable, and click-through is
+  dropped entirely.** They are exclusive — a window that ignores the cursor cannot be dragged —
+  and dragging is what a pet needs. Window *size* became the config choice instead (plan §5.1).
 - Autostart on login (macOS `LaunchAgent`, Windows registry `Run` key / Startup folder).
 - Window position persistence across restarts.
 - ~~Does the repo get renamed?~~ ✅ Done — it is `remi-desktop`, with `origin` at

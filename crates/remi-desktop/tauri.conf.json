@@ -16,8 +16,8 @@
       {
         "label": "pet",
         "title": "Remi",
-        "width": 360,
-        "height": 360,
+        "width": 260,
+        "height": 260,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,

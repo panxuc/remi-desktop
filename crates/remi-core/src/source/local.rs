@@ -18,20 +18,14 @@ use crate::store::{self, Store};
 /// One hook write is a temp file plus a rename, and parallel tool calls fire several hooks at
 /// once; waiting this long turns each burst into a single listing.
 ///
-/// Lowered from 50 ms to 10 ms on 2026-09-14. Measured end-to-end write-to-delivery afterwards:
-/// **~29 ms**, of which ~19 ms is how long the OS takes to tell us the file changed at all. 10 ms
-/// still covers a temp-file-plus-rename pair and a burst of parallel hooks, which are microseconds
-/// apart.
+/// Write-to-delivery is around 29 ms end to end, most of which is the delay before the OS reports
+/// the change at all; this constant is the smaller part.
 ///
-/// ⚠️ This does **not** make a short-lived pose visible, and it was tried in the belief that it
-/// would. A `Read` or `Edit` of a small file holds `Viewing`/`Writing` for only **15–18 ms** before
-/// `PostToolUse` clears it — shorter than the ~19 ms notification delay alone — so by the time the
-/// directory is listed the record already says `thinking` again, the listing is identical to the
-/// last one, and nothing is reported. No settle value fixes that, and neither would polling: the
-/// level genuinely only exists for 18 ms, which is also one frame at 60 fps.
-///
-/// The fix has to make the level itself last longer, i.e. stop `ToolEnd` from clearing a pose it
-/// did not set (`signal.rs`). Not done — see plan §12.
+/// ⚠️ It also bounds what can be observed. A record that changes and changes back inside one window
+/// is coalesced away — the listing that follows is identical to the previous one, so nothing is
+/// reported. A pose shorter than the notification delay therefore never arrives however this is
+/// tuned, and polling would not help, since the record holds the value for no longer than that
+/// either. [`crate::signal::Signal::ToolEnd`] is what produces such poses.
 const SETTLE: Duration = Duration::from_millis(10);
 
 /// A watch on one state dir that reports its whole listing each time it changes.

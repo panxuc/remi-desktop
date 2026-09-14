@@ -1,4 +1,4 @@
-//! The pet window: size, remembered position, click-through (plan §5.1, §5.4).
+//! The pet window: its size, and remembering where the user put it.
 //!
 //! Transparency, decorations, always-on-top and shadow are all declared in `tauri.conf.json`, not
 //! here — they have to be set when the window is created.
@@ -9,26 +9,13 @@ use tauri::{LogicalPosition, LogicalSize, Manager, WebviewWindow, WindowEvent};
 
 use crate::config::{Config, Saver};
 
-/// The art is 360×360 (brief §2.1) and `tauri.conf.json` opens the window at that size; `scale`
-/// multiplies it.
-const BASE_SIZE: f64 = 360.0;
-
-/// Guards against a config that would make Remi a dot or fill the screen. Not a taste judgement —
-/// a `scale` of 0 produces a window the user can neither see nor grab to fix.
-const SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.25..=4.0;
-
-/// Applies the saved size, position and click-through, then keeps the position current.
+/// Applies the configured size and the saved position, then keeps the position current.
 pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Saver) {
-    let (scale, position, click_through) = {
+    let (size, position) = {
         let config = config.lock().expect("config mutex poisoned");
-        (
-            config.scale.clamp(*SCALE_RANGE.start(), *SCALE_RANGE.end()),
-            (config.window.x, config.window.y),
-            config.click_through,
-        )
+        (config.size.edge(), (config.window.x, config.window.y))
     };
 
-    let size = BASE_SIZE * f64::from(scale);
     if let Err(err) = window.set_size(LogicalSize::new(size, size)) {
         tracing::warn!("setting window size: {err}");
     }
@@ -39,13 +26,6 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
         && let Err(err) = window.set_position(LogicalPosition::new(x, y))
     {
         tracing::warn!("restoring window position: {err}");
-    }
-
-    // ⚠️ Only ever from config. Turning this on leaves the window unable to receive the
-    // right-click that would turn it off, and the tray — the way back (plan §5.2) — does not
-    // exist yet, so nothing in the app may enable it on the user's behalf.
-    if click_through && let Err(err) = window.set_ignore_cursor_events(true) {
-        tracing::warn!("enabling click-through: {err}");
     }
 
     watch_position(window, config.clone(), saver);

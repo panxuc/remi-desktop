@@ -17,7 +17,7 @@
 |---|---|---|---|
 | 1 | GUI stack | **Tauri v2 + Rust** — ✅ proven at M1, transparent WebGL composites. `egui`/`eframe` fallback unused | brief §3, §11 |
 | 2 | Platforms | **macOS + Windows** for v1. Linux blocked on Wayland, not on toolkit | brief §7 |
-| 3 | Renderer | **Spine from day one**, not a v1.1 swap. `renderer/gif.js` kept as a fallback behind the same contract | §5.3 |
+| 3 | Renderer | **Spine from day one**, not a v1.1 swap — ✅ shipped at M2. `renderer/gif.js` kept behind the same contract, but its art is behind the `gif-fallback` cargo feature and off by default | §5.3, §5.5 |
 | 4 | Frontend tooling | **No build step.** Static files, ES modules, `spine-webgl` vendored. Keeps node out of the Windows build | §5 |
 | 5 | Crates | `remi-core` (UI-free, all the logic) · `remi-desktop` · `remi-hook` | §2 |
 | 6 | Message semantics | **Transmit a level, not edges.** "Session S is in state X as of T" | brief §4 |
@@ -829,12 +829,13 @@ that ever reconnects.
 
 ## 5. `remi-desktop`
 
-`✅` exists as of M1; everything else is still to be written.
+`✅` exists as of M2; everything else is still to be written.
 
 ```
 crates/remi-desktop/
-├─ Cargo.toml           ✅  tauri 2.11.5 (feature `macos-private-api`), tauri-build 2.6.3
-├─ build.rs             ✅  tauri_build::build(); asset staging (§5.5) joins it at M2
+├─ Cargo.toml           ✅  tauri 2.11.5 (feature `macos-private-api`), tauri-build 2.6.3;
+│                             feature `gif-fallback` (off) gates the GIF art — §5.5
+├─ build.rs             ✅  tauri_build::build() + asset staging (§5.5)
 ├─ tauri.conf.json      ✅
 ├─ capabilities/
 │  └─ default.json      ✅  REQUIRED — see §5.1; without it the window cannot be dragged
@@ -847,20 +848,32 @@ crates/remi-desktop/
 │  ├─ tray.rs               icon + the same menu + quit
 │  └─ bridge.rs             Registry -> webview events
 └─ ui/                  ✅  frontendDist; plain static files, no build step
-   ├─ index.html        ✅  #root[data-tauri-drag-region] + full-bleed canvas
-   ├─ m1-webgl.js       ✅  the M1 transparency probe — DELETE when spine.js lands
-   ├─ app.js                receives state events, drives the active renderer
-   ├─ renderer/{spine,gif}.js
-   ├─ vendor/spine-webgl.js
-   └─ assets/               staged by build.rs — gitignored, never edited by hand
+   ├─ index.html        ✅  #root[data-tauri-drag-region]; the renderer appends its own element
+   ├─ app.js            ✅  picks a renderer, mounts it, feeds it states; M2 debug keys
+   ├─ renderer/spine.js ✅  the v1 renderer
+   ├─ renderer/gif.js   ✅  the fallback, same contract — art gated by `gif-fallback`
+   ├─ vendor/spine-webgl.js ✅  4.2.120 IIFE build; provenance in vendor/README.md
+   └─ assets/           ✅  staged by build.rs — gitignored, never edited by hand
 ```
 
 `gen/` and `ui/assets/` are gitignored by `crates/remi-desktop/.gitignore`.
+
+⚠️ **Everything under `ui/` is embedded in the executable** by `generate_context!` at compile time
+— paths and contents both, nothing is read from disk at runtime. Two consequences: a frontend edit
+needs a `cargo build` to take effect (it does trigger one), and staging a file into `ui/assets/` is
+the same decision as shipping it. The second is why §5.5 has a feature gate.
 
 ### 5.1 Window configuration
 
 `tauri.conf.json > app.windows[0]`: `transparent: true`, `decorations: false`,
 `alwaysOnTop: true`, `shadow: false`, `resizable: false`, `skipTaskbar: true`.
+
+**Click-through is dropped, 2026-09-14.** Brief §10 left it undecided between click-through and
+draggable; draggable won, and the two are exclusive — a window that ignores the cursor cannot be
+dragged. Dragging is the behaviour a pet needs, so there is no toggle and no config key. The
+window's size is a config choice instead (§5.4): `small`, `medium` or `large`, defaulting to
+`medium`, because the art's native 360 px turned out to be larger than anyone wants sitting on top
+of their screen.
 
 ⚠️ **macOS requires `app.macOSPrivateApi: true`** for a genuinely transparent window. That
 flag makes the app ineligible for the App Store — irrelevant here (private, personal use) but
@@ -895,7 +908,7 @@ Right-clicking Remi opens a context menu — the user's model is VS Code's remot
   ✓ Follow most recent            (Selection::Auto)
   ─────────────────────────────────────────────
   Add host…
-  Click-through            ⌘⇧C
+  Size                     ▸  small · medium · large
   Settings…
   Quit
 ```
@@ -937,12 +950,37 @@ export function dispose();
 8-bit alpha on a transparent window, resolution independence, real `AnimationState` blending,
 and the asset's own transition animations (`d_win`, `a_win`) — all things the GIF path
 structurally cannot do (brief §11). `renderer/gif.js` is kept as a ~40-line fallback behind
-the same contract, for the case where a transparent WebGL canvas turns out not to composite.
+the same contract, for the case where a transparent WebGL canvas turns out not to composite; its
+art is gated (§5.5), so it mounts with a message naming the feature rather than showing broken
+images in a build that does not carry it.
 
-Animation mapping (brief §2.2): `a`→Viewing, `a_win`→Idle, `b`→Thinking, `c`→Proud,
-`d`→Writing, `e`→WaitingForInput. `light` is a flavour variant; `0` is never played. Replying has
-no animation yet: `d_win` (writing intermittently) is the candidate, to be judged by watching it
-at M2 rather than from its name.
+Animation mapping (brief §2.2): `a`→Idle, `a_win`→Viewing, `b`→Thinking, `c`→Proud,
+`d`→Writing, `e`→WaitingForInput. **`a` and `a_win` are swapped** relative to the asset's first
+reading, decided 2026-09-14 by watching the pet idle: `a_win` is the pen pick-up and loops like
+being patted on the head, which is tolerable in a pose that flashes past during a read and wrong in
+the one Remi holds whenever nothing is happening. Pen-in-hand also reads better as "on task".
+**`d`→Replying as well** — decided 2026-09-14 after watching
+`d_win`, the former candidate: Replying is Claude putting words on the screen, which is near enough
+to writing that a separate pose is a distinction without a difference. `light`, `d_win` and `0` are
+now all unplayed.
+
+**Framing is the union of the played animations**, sampled at load, not per-animation.
+Per-animation framing makes Remi change size on every state change — `c` throws both arms up. The
+union covers only what this renderer actually plays, which is worth real pixels: `d_win` reached
+~45 world units further left than anything else, so dropping it from the map made Remi ~13% larger
+on screen, and `light` would cost another ~15% for a pose nothing maps to.
+
+⚠️ **Measure the framing on a throwaway skeleton, never on the one being drawn.** Posing a skeleton
+leaves slot attachments behind, and an animation only resets the slots it keys. Measuring on the
+render skeleton left it wearing the last sampled pose's attachments, so the first state to play
+inherited whichever of them it did not key itself — observed as a missing mouth on startup that
+fixed itself on the first state change.
+
+⚠️ **The atlas is straight alpha** (`leimi.atlas` carries no `pma` flag), so `drawSkeleton` takes
+`premultipliedAlpha: false` while the *canvas* is created `premultipliedAlpha: true`. These are not
+in conflict: the batcher blends colour `(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` and alpha separately
+`(ONE, ONE_MINUS_SRC_ALPHA)`, so the framebuffer ends up premultiplied, which is what M1 proved
+composites. Setting both to the same value is the tempting wrong answer.
 
 The 60 fps loop is real GPU work in an always-on-top window on an 8 GB M2. Mitigations, in
 order: pause the loop when the window is fully occluded or the state is `Offline`; drop to a
@@ -959,10 +997,9 @@ tick, so `Proud` decays without a message arriving.
 `~/Library/Application Support/moe.anything.remi/config.toml`).
 
 ```toml
-renderer      = "spine"        # "spine" | "gif"
-click_through = false
-scale         = 1.0
-selection     = "auto"         # or: selection = { connection = "plume", session = "a1b2c3d4" }
+renderer  = "spine"            # "spine" | "gif"
+size      = "medium"           # "small" (180) | "medium" (260) | "large" (360), or a pixel count
+selection = "auto"             # or: selection = { connection = "plume", session = "a1b2c3d4" }
 
 [window]
 x = 1620
@@ -1001,11 +1038,30 @@ is an avoidable class of bug. `build.rs` copies and **renames** into `ui/assets/
 assets/spine-asset/Q蕾米.json  -> ui/assets/remi.json
 assets/spine-asset/leimi.atlas -> ui/assets/remi.atlas   (rewrite the page-image line)
 assets/spine-asset/leimi.png   -> ui/assets/remi.png
-assets/0*.gif                  -> ui/assets/gif/
+assets/0*.gif                  -> ui/assets/gif/        only with --features gif-fallback
 ```
 
 The `.atlas` file names its page image on line 1, so the rename requires rewriting that line,
 not just the filename.
+
+**The GIF art is behind the `gif-fallback` cargo feature, default off.** Measured 2026-09-14: it is
+8.5 MiB, 26% of the binary, for a render path M1 and M2 between them showed macOS does not need.
+`ui/renderer/gif.js` ships either way — it is 40 lines, and a seam with one implementation is not a
+seam — so turning the feature on is a rebuild, not a port. The case it is still held for is M6:
+WebView2 on DWM is a different compositor path from WKWebView, and it is the one place the
+fallback's original justification is unresolved. Delete both once M6 passes.
+
+Two traps this staging has already hit, neither of which announces itself:
+
+⚠️ **`cfg!(feature = "gif-fallback")` is always false in a build script** — build scripts are
+compiled without their own crate's features. `CARGO_FEATURE_GIF_FALLBACK` in the environment is the
+only thing cargo actually sets, and the macro version silently disables the feature forever.
+
+⚠️ **`ui/assets/` must be declared `rerun-if-changed` even though it is the script's *output*.**
+Cargo caches one build-script result per feature set, so turning the feature back off finds a fresh
+no-feature fingerprint, skips the script, and embeds the art the previous build left on disk — the
+feature appears to do nothing. Watching the destination is what makes that mtime invalidate the
+cache. Verified by toggling the feature both ways and measuring the binary, not by reasoning.
 
 ---
 
@@ -1280,7 +1336,7 @@ something end-to-end works before any infrastructure exists.
 |---|---|---|
 | **M0** | Workspace scaffold; `remi-core` with `PetState`, `SessionRecord`, `Signal`/`Reducer`, `Registry` + tests | `cargo test -p remi-core` green |
 | **M1** | Transparent, borderless, always-on-top Tauri window on macOS, **with a WebGL canvas compositing in it** | Screenshot: pet over a text editor, no chrome, no black box behind the canvas |
-| **M2** | Spine renderer: all 7 states switchable from a debug key, with blended transitions; battery measured | Cycling states looks right; idle power cost recorded in this file |
+| **M2** | Spine renderer: all 7 states switchable from a debug key, with blended transitions | Cycling states looks right ✅. Battery measurement **dropped** from the exit criterion — see below |
 | **M3** | `remi-hook signal` + Claude Code adapter + `local` source + session menu + tray, config and window position persist | Run Claude in another terminal on the laptop; pet tracks it. Approve a permission prompt and the waiting pose **clears**. Restart restores position and selection. |
 | **M4** | `ssh` source against `plume` | Detach zellij, run Claude on `plume`, pet tracks it; menu lists both machines' sessions |
 | **M4b** | CI: a `v*` tag publishes `remi-hook` for all five targets, `install.sh` + `SHASUMS256.txt`, and both GUI bundles | `curl …/install.sh \| sh` on a fresh remote installs, and `remi-hook setup --check` passes there |
@@ -1289,7 +1345,8 @@ something end-to-end works before any infrastructure exists.
 | **M7** | Autostart on login, both platforms | Reboot, pet is there |
 | **M8** | OpenCode adapter (plugin, SSE fallback) | Run OpenCode and Claude Code on the same box; menu lists both, labelled by harness; each drives the right pose |
 
-**Where we are — 2026-09-14.** **M0 and M1's exit criteria are both met.** `remi-core` has `state`,
+**Where we are — 2026-09-14.** **M0 and M1 are met; M2 is met apart from the battery number.**
+`remi-core` has `state`,
 `record`, `store`, `signal` (the reducer), `harness` (Claude Code stdin parsing), `registry`,
 and `source::local` (`StateDirWatch`), all with unit tests. `remi-hook` implements `signal`,
 `state`, `snapshot` and `watch`, and `signal` has run live under real Claude Code hooks on the
@@ -1302,7 +1359,22 @@ CLI — `cargo run -p remi-desktop` is the whole dev loop). A WebGL2 canvas clea
 it**, and a premultiplied alpha ramp fades cleanly to nothing at the edges, so **true 8-bit
 alpha survives the compositor** — the property GIF's 1-bit transparency structurally cannot
 give us (brief §11). Borderless, shadowless, always-on-top and draggable all confirmed by
-eye. The probe lives at `ui/m1-webgl.js` and is throwaway once `renderer/spine.js` lands.
+eye. The probe lived at `ui/m1-webgl.js`; it was deleted when `renderer/spine.js` landed.
+
+**M2 renders, 2026-09-14** — watched on the M2 MacBook, one frame at a time. `renderer/spine.js`
+draws the real skeleton through the vendored 4.2.120 runtime: all seven states switch from the
+digit keys, transitions blend bone-for-bone rather than dissolving, and the alpha at the hair and
+ribbon edges is clean on a transparent always-on-top window. The startup missing-mouth bug (§5.3)
+was found by eye here and fixed.
+
+**The battery measurement is deliberately skipped, 2026-09-14.** It was M2's second exit criterion
+and it is being dropped, not deferred-and-forgotten: a working GUI that tracks local Claude is worth
+more than a power number for a pet nobody is running yet, and the number is only actionable once
+there is something to run all day. The loop is an unthrottled `requestAnimationFrame` with the one
+mitigation that needs no help from Rust — stop on `visibilitychange`, and stop entirely once
+`Offline` has finished fading out. Occlusion-pausing (covered, not hidden) is a Tauri event and is
+the first thing to reach for if it turns out to matter. Revisit after M3, when the pet is actually
+in front of someone all day.
 
 **This closes the stack question.** §0.1 and brief §3's `egui` fallback, and §0.3's
 `renderer/gif.js` fallback, are no longer on the critical path — neither was needed. M2 is

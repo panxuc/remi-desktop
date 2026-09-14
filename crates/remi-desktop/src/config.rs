@@ -1,5 +1,3 @@
-//! The pet's config file (plan §5.4), and the debounced writer that keeps it current.
-//!
 //! Nothing here is allowed to stop the pet starting. A config file that is missing, unreadable or
 //! malformed logs and falls back to defaults: the alternative is a desktop pet that refuses to
 //! appear because of a typo, which is worse than one that appears in the wrong place.
@@ -22,11 +20,7 @@ const DEBOUNCE: Duration = Duration::from_secs(1);
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub renderer: Renderer,
-    /// Never turned on by the pet itself: with the window click-through, only the tray can turn it
-    /// back off (plan §5.2), so an automatic one would be a trap.
-    pub click_through: bool,
-    /// Multiplies the window's edge length. The renderer refits itself to whatever size it gets.
-    pub scale: f32,
+    pub size: Size,
     pub selection: SelectionConfig,
     pub window: WindowConfig,
     pub connections: Vec<Connection>,
@@ -36,8 +30,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             renderer: Renderer::Spine,
-            click_through: false,
-            scale: 1.0,
+            size: Size::default(),
             selection: SelectionConfig::Auto,
             window: WindowConfig::default(),
             // A pet with no connections can never show anything, so the default is the one
@@ -59,13 +52,55 @@ pub enum Renderer {
 }
 
 impl Renderer {
-    /// Passed to the webview as a query parameter, which is how `ui/app.js` chooses (plan §5.3):
-    /// Rust never learns which renderer is active, it only relays the user's choice.
+    /// The name `ui/app.js` knows the renderer by. Rust never learns which one is active; it only
+    /// relays the user's choice.
     pub fn as_query(self) -> &'static str {
         match self {
             Renderer::Spine => "spine",
             Renderer::Gif => "gif",
         }
+    }
+}
+
+/// The window's edge length: `"large"`, `"medium"`, `"small"`, or a number of logical pixels for
+/// anything else. Remi is square, and the renderer refits itself to whatever it is given, so one
+/// number is the whole of it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Size {
+    Named(NamedSize),
+    Pixels(f64),
+}
+
+impl Default for Size {
+    fn default() -> Self {
+        Size::Named(NamedSize::default())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NamedSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl Size {
+    /// Below this the character is a smudge; above it she is a poster. A hand-written pixel count
+    /// outside the range is clamped rather than refused, since the window it would produce is one
+    /// the user can neither see nor grab to fix.
+    const RANGE: std::ops::RangeInclusive<f64> = 96.0..=720.0;
+
+    pub fn edge(self) -> f64 {
+        let edge = match self {
+            Size::Named(NamedSize::Small) => 180.0,
+            Size::Named(NamedSize::Medium) => 260.0,
+            Size::Named(NamedSize::Large) => 360.0,
+            Size::Pixels(px) => px,
+        };
+        edge.clamp(*Self::RANGE.start(), *Self::RANGE.end())
     }
 }
 
@@ -133,7 +168,7 @@ impl SelectionConfig {
 }
 
 /// A *source*, not a host: the same machine reached two ways is two connections, and nothing
-/// deduplicates them (plan §5.4).
+/// deduplicates them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
@@ -141,15 +176,14 @@ pub struct Connection {
     pub kind: ConnectionKind,
 }
 
-/// ⚠️ When `ssh` lands at M4 it needs `ssh_host` as a *sibling* of `kind` (plan §5.4), which is a
-/// `#[serde(flatten)]`ed internally-tagged enum — and serde silently rejects every flattened field
-/// when the outer struct also has `deny_unknown_fields`. One or the other has to give. Keeping the
-/// typo-catching is worth more here than the tidier shape, so the kind-specific keys should become
-/// named `Option` fields on [`Connection`] rather than a flattened enum.
+/// ⚠️ A kind that carries its own settings, such as an ssh host, wants them as siblings of `kind`
+/// in the file. That shape is a `#[serde(flatten)]`ed internally-tagged enum, and serde silently
+/// rejects every flattened field when the outer struct also has `deny_unknown_fields`. [`Connection`]
+/// keeps the typo-catching, so such settings belong there as named `Option` fields instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionKind {
-    /// This machine's own state dir. The only kind v1 implements; `ssh` is M4 and `mqtt` is M5.
+    /// This machine's own state dir. The only kind implemented so far; ssh and mqtt are to come.
     Local,
 }
 
@@ -189,7 +223,8 @@ impl Config {
     fn write(&self) -> Result<(), String> {
         let path = Self::path().ok_or("no config directory on this platform")?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
         }
         let text = toml::to_string_pretty(self).map_err(|e| format!("serialising config: {e}"))?;
         std::fs::write(&path, text).map_err(|e| format!("writing {}: {e}", path.display()))
@@ -246,11 +281,10 @@ mod tests {
 
     #[test]
     fn reads_the_documented_file_shape() {
-        // This is plan §5.4's example, minus the connection kinds v1 does not implement yet.
+        // The documented file shape, using only the connection kinds implemented so far.
         let text = r#"
             renderer = "spine"
-            click_through = false
-            scale = 1.0
+            size = "medium"
             selection = "auto"
 
             [window]
@@ -263,23 +297,54 @@ mod tests {
         "#;
         let config: Config = toml::from_str(text).unwrap();
         assert_eq!(config.renderer, Renderer::Spine);
+        assert_eq!(config.size, Size::Named(NamedSize::Medium));
         assert_eq!(config.window.x, Some(1620.0));
         assert_eq!(config.selection.to_selection(), Selection::Auto);
         assert_eq!(config.connections.len(), 1);
     }
 
     #[test]
+    fn size_takes_a_name_or_a_pixel_count() {
+        let named: Config = toml::from_str(r#"size = "small""#).unwrap();
+        assert_eq!(named.size.edge(), 180.0);
+        let pixels: Config = toml::from_str("size = 300").unwrap();
+        assert_eq!(pixels.size, Size::Pixels(300.0));
+        assert_eq!(pixels.size.edge(), 300.0);
+    }
+
+    #[test]
+    fn an_unusable_pixel_size_is_clamped_rather_than_refused() {
+        // A window of 0 is one the user can neither see nor drag to somewhere they can fix it.
+        assert_eq!(
+            toml::from_str::<Config>("size = 0").unwrap().size.edge(),
+            96.0
+        );
+        assert_eq!(
+            toml::from_str::<Config>("size = 10000")
+                .unwrap()
+                .size
+                .edge(),
+            720.0
+        );
+    }
+
+    #[test]
     fn a_pinned_selection_round_trips() {
-        let text = r#"selection = { connection = "plume", harness = "claude-code", session = "a1b2" }"#;
+        let text =
+            r#"selection = { connection = "plume", harness = "claude-code", session = "a1b2" }"#;
         let config: Config = toml::from_str(text).unwrap();
         let selection = config.selection.to_selection();
         assert!(matches!(&selection, Selection::Pinned(key) if key.session.as_str() == "a1b2"));
-        assert_eq!(SelectionConfig::from_selection(&selection), config.selection);
+        assert_eq!(
+            SelectionConfig::from_selection(&selection),
+            config.selection
+        );
     }
 
     #[test]
     fn a_pin_the_current_build_cannot_parse_falls_back_to_auto() {
-        let text = r#"selection = { connection = "plume", harness = "Claude Code", session = "../x" }"#;
+        let text =
+            r#"selection = { connection = "plume", harness = "Claude Code", session = "../x" }"#;
         let config: Config = toml::from_str(text).unwrap();
         assert_eq!(config.selection.to_selection(), Selection::Auto);
     }

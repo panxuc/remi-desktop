@@ -25,10 +25,8 @@ tauri-build = "2.6.3"
 [features]
 # Whether the GIF fallback's art is staged into `ui/` and therefore embedded in the binary.
 #
-# Off by default: it is 8.5 MiB, 26% of the build, for a render path M1 and M2 between them
-# showed macOS does not need. `ui/renderer/gif.js` itself ships either way — it is 40 lines, and a
-# seam with one implementation is not a seam. This feature is only about the art.
-#
-# Turn it on if WebView2 turns out not to composite a transparent WebGL canvas at M6, which is the
-# one place the fallback's original justification is still unresolved.
+# Off by default: it is 8.5 MiB, 26% of the build, for a render path the Spine renderer makes
+# unnecessary wherever a transparent WebGL canvas composites. `ui/renderer/gif.js` itself ships
+# either way — it is 40 lines, and a seam with one implementation is not a seam. This feature is
+# only about the art. Turn it on for a platform whose webview cannot composite that canvas.
 gif-fallback = []

@@ -1,7 +1,7 @@
 // Picks a renderer, mounts it, and feeds it states.
 //
-// Rust never learns which renderer is active — that is the whole point of the seam (plan §5.3).
-// This file is the only thing on either side that knows both exist.
+// Rust never learns which renderer is active — that is the point of the seam. This file is the
+// only thing on either side that knows both exist.
 
 /// `PetState`, serialised by serde as snake_case (remi-core `state.rs`). The order is the debug
 /// cycle order, which is why it reads as a turn rather than alphabetically.
@@ -37,8 +37,8 @@ async function mountRenderer(name) {
 
 const tauri = window.__TAURI__;
 
-/// Rust never decides which renderer runs — it only relays the `renderer` key from config.toml
-/// (plan §5.4). `?renderer=gif` overrides it, for trying the other one without editing config.
+/// Rust only relays the `renderer` key from the config file; it does not decide.
+/// `?renderer=gif` overrides it, for trying the other one without editing config.
 async function chooseRenderer() {
   const override = new URLSearchParams(location.search).get("renderer");
   if (override in RENDERERS) return override;
@@ -70,8 +70,8 @@ async function boot() {
   await tauri?.event?.listen("pet://state", (event) => apply(event.payload?.state));
 
   // Then ask, because Tauri drops events that have no listener yet — the pet's first pose is
-  // usually emitted while this page is still parsing. Same reasoning as the session store being a
-  // register rather than a channel (plan §3.1): a late reader must still see the current value.
+  // usually emitted while this page is still parsing, and a late reader must still be able to see
+  // the current value.
   let first = state;
   try {
     const current = await tauri?.core?.invoke("pet_state");
@@ -96,8 +96,8 @@ function apply(next, opts) {
   renderer?.setState(next, opts);
 }
 
-/// M2's exit criterion is "all 7 states switchable from a debug key", so: digits pick a state
-/// directly, arrows step through them. The window takes focus on click like any other.
+/// Digits pick a state directly, arrows step through them, so every pose can be reached without an
+/// agent running. The window takes focus on click like any other.
 function onKeyDown(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
 

@@ -1,23 +1,22 @@
-// The Spine render path — v1's renderer (brief §11, plan §5.3).
+// The Spine render path, and the renderer the pet uses.
 //
 // `spine` is a global, defined by ./vendor/spine-webgl.js, which index.html loads as a classic
-// script ahead of the module graph. That is what keeps §0 #4 true: no bundler, no node.
+// script ahead of the module graph — so there is no bundler and no node in the build.
 
-// Animation names are the asset's own (brief §2.2). `light` is a flavour variant and `0` is the
-// empty setup pose — neither is ever played.
+// Animation names are the asset's own. `light` is a flavour variant and `0` is the empty setup
+// pose — neither is ever played.
 const ANIMATION = {
-  // `a_win` is the pen pick-up and `a` is the empty-handed rest. Swapped relative to the asset's
-  // first reading (brief §2.2), because `a_win` loops like being patted on the head — tolerable
-  // for a pose that flashes past during a read, wrong for the one Remi holds whenever nothing is
-  // happening. Pen in hand also just reads better as "on task".
+  // `a_win` is the pen pick-up and `a` is the empty-handed rest. `a_win` loops like being patted
+  // on the head, which is tolerable in a pose that flashes past during a read and wrong in the one
+  // Remi holds whenever nothing is happening — hence this way round, which also reads better:
+  // pen in hand while on task, empty-handed at rest.
   viewing: "a_win",
   idle: "a",
   thinking: "b",
   proud: "c",
   writing: "d",
-  // Deliberately the same as Writing. `d_win` was the candidate; watched at M2 and not kept.
-  // Replying is Claude putting words on the screen, which is near enough to writing that a
-  // separate pose would be a distinction without a difference.
+  // Deliberately the same as Writing: replying is the agent putting words on the screen, which is
+  // near enough to writing that a separate pose would be a distinction without a difference.
   replying: "d",
   waiting_for_input: "e",
   // A session that ended has nothing to draw, and the loop stops rather than spinning the GPU
@@ -58,8 +57,8 @@ export async function mount(rootEl) {
   canvas = document.createElement("canvas");
   rootEl.appendChild(canvas);
 
-  // `premultipliedAlpha: true` is what M1 proved composites correctly through WKWebView — see
-  // the note on `drawSkeleton` below for why non-premultiplied *textures* are still right.
+  // `premultipliedAlpha: true` is what composites correctly through the system webview — see the
+  // note on `drawSkeleton` below for why non-premultiplied *textures* are still right.
   context = new spine.ManagedWebGLRenderingContext(canvas, {
     alpha: true,
     premultipliedAlpha: true,
@@ -121,20 +120,17 @@ export function dispose() {
   currentState = null;
 }
 
-/// The pose changes the silhouette a lot — `c` throws both arms up, `d_win` reaches 50 units
-/// further left than anything else — so framing each animation on its own would make Remi jump in
-/// size whenever the state changed. Fit the union instead: one scale, chosen once, that nothing
-/// overflows.
+/// The pose changes the silhouette a lot — `c` throws both arms up — so framing each animation on
+/// its own would make Remi jump in size whenever the state changed. Fit the union instead: one
+/// scale, chosen once, that nothing overflows.
 ///
-/// The union is taken over the animations this renderer actually plays, not over every animation
-/// in the file. Including `light`, which nothing maps to, would cost about 15% of Remi's on-screen
-/// size to accommodate a pose the user never sees.
+/// The union covers only the animations this renderer plays, not every animation in the file. An
+/// unplayed one can reach well outside the others, and including it would shrink Remi on screen to
+/// make room for a pose nobody ever sees.
 function measureFit(skeletonData) {
-  // Measured on its own skeleton, never on the one being drawn. Posing a skeleton leaves slot
-  // attachments behind, and an animation only resets the slots it keys: measuring on the render
-  // skeleton left it wearing the last sampled pose's attachments, so the first state to play
-  // inherited whichever of them it did not key itself — visibly, a missing mouth until some other
-  // animation happened to set one.
+  // Its own skeleton, never the one being drawn: posing a skeleton leaves slot attachments behind,
+  // and an animation only resets the slots it keys, so measuring on the render skeleton would leave
+  // it wearing the last sampled pose's attachments into whatever plays first.
   const skeleton = new spine.Skeleton(skeletonData);
   const probe = new spine.AnimationState(new spine.AnimationStateData(skeletonData));
   const offset = new spine.Vector2();
@@ -218,9 +214,9 @@ function stop() {
 }
 
 /// A window the compositor is not showing still gets rAF callbacks on some paths; stopping on
-/// `visibilitychange` is the first of plan §5.3's battery mitigations and the only one that needs
-/// no help from Rust. Real occlusion (fully covered, not hidden) is a Tauri event, and lands with
-/// the bridge at M3.
+/// Stopping on `visibilitychange` is the one way to avoid spending a GPU on an unseen window that
+/// needs no help from Rust. Real occlusion — fully covered rather than hidden — is a Tauri event
+/// and is not wired up.
 function onVisibilityChange() {
   if (document.hidden) stop();
   else start();

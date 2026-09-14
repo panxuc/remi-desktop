@@ -1,4 +1,4 @@
-//! Tauri codegen, plus asset staging (plan §5.5).
+//! Tauri codegen, plus staging the art into `ui/assets/` for the webview to fetch.
 
 use std::fs;
 use std::path::{Path, PathBuf};
