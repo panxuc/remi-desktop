@@ -26,11 +26,13 @@
 | 9 | Not `/tmp` or `$XDG_RUNTIME_DIR` | `/run/user/<uid>` is destroyed when the last login session ends — exactly our detached-zellij case. `/tmp` is tmpfs on some distros and disk on others | §3.2 |
 | 10 | Disk wear | Non-issue: ~0.2 GB/day against a 150–600 TBW rating. Writes are coalesced anyway (skip if same state and `ts` < 20 s old) | §3.3 |
 | 11 | Write path | **One, always the same.** A hook writes the file and exits. No transport is ever in Claude's critical path | §3, §6 |
-| 12 | Read paths | Three, one per transport: `local` · `ssh` · `mqtt`. All configured ones run concurrently, feeding one registry | §4.4 |
+| 12 | Read paths | Three, one per transport: `local` · `ssh` · `mqtt`, feeding one registry. `local` is always on; the rest run only where the user has connected, and then concurrently | §4.4 |
+| 12b | Which connections run | **Opt-in, one machine at a time.** Every host in `~/.ssh/config` is *offered* in the menu; none is connected to until the user presses Connect. Connecting remembers the host in the config, so it comes back on the next launch; Disconnect stops it and forgets it | §4.4, §5.2 |
 | 13 | The `ssh` transport | Long-lived `ssh -T <host> remi-hook watch`, printing the state dir's whole listing as a JSON array on every change. **Not polling.** No `ControlMaster`, no edits to the user's `~/.ssh/config` | §4.4 |
 | 14 | Why the system `ssh` binary | So `ProxyJump`, `IdentityFile`, agent and `known_hosts` apply for free. A Rust SSH client would mean configuring the tool separately | §4.4 |
 | 15 | MQTT's role | **Optional.** A detached publisher alongside the file write, for hosts the laptop can't reach directly | §6, §8 |
 | 16 | Session selection | **One session rendered at a time**, chosen from a right-click menu on Remi and an identical tray menu. Default "follow most recent". A pinned session stays selected after it ends, shown `Offline` | §4.3, §5.2 |
+| 16b | Menu shape | This machine's sessions **flat and first**; every other machine a **submenu** carrying its sessions and its Connect/Disconnect. A host is something to act on, not just a heading — and its own row carries the counts, so a waiting session is visible without opening it | §5.2 |
 | 17 | Why the tray duplicates the menu | Not the only way back any more — click-through is dropped. It is the way to the menu when the pet is covered or awkwardly placed, in an app with no Dock icon | §5.2 |
 | 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock times `Proud` decay and "last heard". Prevents clock skew distorting either | §4.2 |
 | 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s — and a `Proud` the pet finds on attach rather than watches arrive starts already faded, since it is an edge and the pet has no idea how old it is. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
@@ -578,10 +580,11 @@ crates/remi-core/src/
 │  ├─ claude.rs    # stdin JSON -> HookInput {session, cwd, transcript}   (push)
 │  └─ opencode.rs  # not yet: the plugin passes flags, stdin is never read; SSE fallback later
 └─ source/         # how the PET READS — one file per transport
-   ├─ mod.rs       # ConnectionId, SessionUpdate
-   ├─ local.rs     # StateDirWatch: the state dir's whole listing, again on every change
-   ├─ ssh.rs       # stream from `ssh <host> remi-hook watch`
-   └─ mqtt.rs      # subscribe to remi/+/+/+/state (rumqttc)
+   ├─ mod.rs        # ConnectionId, SessionUpdate
+   ├─ local.rs      # StateDirWatch: the state dir's whole listing, again on every change
+   ├─ ssh.rs        # stream from `ssh <host> remi-hook watch`, with Stop and reconnection
+   ├─ ssh_config.rs # the hosts ~/.ssh/config names, so the menu can offer them
+   └─ mqtt.rs       # subscribe to remi/+/+/+/state (rumqttc)
 ```
 
 `harness/` and `source/` are the two independent axes, and nothing crosses between them: an
@@ -784,7 +787,20 @@ reorders and names events differently; a fresh listing is the same everywhere.
 | `ssh` | long-lived `ssh <host> remi-hook watch`, a JSON array per change on stdout | instant | nothing beyond being able to `ssh <host>` already |
 | `mqtt` | subscribe `remi/+/+/+/state`, retained | instant | a broker |
 
-All configured sources run **concurrently** — that is what populates a menu spanning several
+**Connections are opt-in, and each is the user's decision.** `local` is always on — it needs no
+configuring and costs nothing. Every host in the user's `~/.ssh/config` is *listed* in the menu
+from the first launch (`source/ssh_config.rs` reads the names, and only the names), but none is
+connected to until the user presses Connect on it. Starting a source per host at launch would
+spend the pet's first ten seconds reporting `ConnectionLost` for machines nobody asked about,
+and would hold an ssh connection open to each of them all day.
+
+Connecting writes the host into the pet's config, which *is* the list of sources started at
+launch — so a fresh config watches this machine and nothing else, and everything beyond that is
+there because the user asked for it once. Disconnect stops the source and takes it back out. A
+connection that drops on its own is *not* disconnected: it keeps retrying, because a remote going
+quiet for a while is the case this project exists for.
+
+Whatever is connected runs **concurrently** — that is what populates a menu spanning several
 machines. Only the *selected* session is rendered.
 
 #### The `ssh` source is a stream, not a poll
@@ -811,10 +827,41 @@ Consequences worth naming:
 - **No `ControlMaster` needed**, because there is only ever one connection per host. If we
   ever do need multiplexing, we pass `-o ControlPath=<our own state dir>/cm-%C` on the command
   line — we never write to the user's `~/.ssh/config`.
-- Reconnect on exit with exponential backoff (1 s → 30 s), emitting `ConnectionLost` /
-  `ConnectionUp` so the menu can grey the host out rather than silently dropping it.
+- Reconnect on exit with exponential backoff (1 s → 30 s), emitting `Connecting` /
+  `ConnectionLost` so the menu can say what a host is doing rather than silently dropping it.
+  The backoff resets only after a connection that actually delivered a line, so a host that
+  fails instantly is not retried every second for ever.
 - `BatchMode=yes` so a host needing an interactive passphrase fails fast and visibly instead
   of hanging on a prompt nobody can see.
+
+Four things in `source/ssh.rs` are not in the happy path and are each load-bearing:
+
+⚠️ **Keepalives** (`ServerAliveInterval=15`, `ServerAliveCountMax=3`, `ConnectTimeout=10`).
+Without them a host that drops off the network mid-connection leaves the reader blocked in a
+kernel read that never completes: the pet keeps showing that machine's last pose for ever and
+never retries, which reads exactly like "nothing is happening there" — the one thing this
+project must not get wrong.
+
+⚠️ **`ControlMaster=no`.** We honour the user's `~/.ssh/config`, and a `ControlMaster auto` in
+it makes an ssh that finds no master fork a *background* one — which inherits our stdout and
+outlives the connection. Killing our own child would then leave the pipe open and the reader
+stuck on it for ever, leaking a thread per disconnect. Refusing to *be* a master does not stop
+us using one that already exists, and §4.4 wants only one connection per host anyway. This was
+found by a test that hung, not by reasoning.
+
+⚠️ **The child's stderr is drained continuously**, on a thread of its own, keeping the last two
+lines. ssh writes banners, MOTDs and warnings there, and a pipe nobody reads fills up and blocks
+the process writing to it — so a remote with a chatty login would *hang* the connection instead
+of failing it. Those kept lines are also the failure reason the menu shows, because ssh's own
+words (`Permission denied (publickey)`, `Connection refused`, `Host key verification failed`)
+name the cause where its exit status is 255 for all of them. Exit 127 is special-cased to
+"remi-hook is not installed there", which is the first thing that happens against a new host.
+
+⚠️ **Stopping has to reach a thread blocked on a read**, which no flag can do: `ssh::Stop` holds
+the child, and stopping kills it so the read ends at the closed pipe. The same call cuts short a
+wait between retries. The disconnection is then reported by the watch thread *as it ends*, not by
+whoever called stop — otherwise it could overtake a snapshot that thread had already read, and
+put the connection back up with sessions nobody is listening for.
 
 We shell out to the system `ssh` binary rather than using `russh`/`libssh2` **specifically so
 the user's existing config applies for free** — `ProxyJump`, `IdentityFile`, agent forwarding,
@@ -919,24 +966,27 @@ full-bleed, so without it the root element never sees the mousedown.
 Right-clicking Remi opens a context menu — the user's model is VS Code's remote picker:
 
 ```
-  ✓ plume · Creating bin from crate libs — thinking, 2s
-    plume · dotfiles — idle, 4m
+  ✓ local · Creating bin from crate libs — thinking, 2s
     local · 3f9a1c2e — waiting, just now
-    theresa — disconnected: ssh exited with status 255
+  ─────────────────────────────────────────────
+    theresa — 2 sessions, 1 waiting           ▸   ✓ dotfiles — waiting, just now
+    plume                                     ▸       remi-desktop — writing, 3s
+    whisperain — connecting…                  ▸       ────────────────
+    lappland — disconnected: Permission den…  ▸       Disconnect
   ─────────────────────────────────────────────
     Follow most recent                          (Selection::Auto)
   ─────────────────────────────────────────────
-    Add host…                                   (not built yet)
     Size                     ▸  Small · Medium · Large
     Settings…                                   (not built yet)
     Quit Remi
 ```
 
-Each session is labelled `<connection> · <name>`, where the name is the first of these the
-record has: `title`, then `cwd`, then the raw `session` id. The three session rows above show
-one of each. The record carries all three as-is and **the pet** picks, so changing the display
-rule never requires upgrading `remi-hook` on the remotes. Names are cut at 44 characters:
-`title` allows 80, and a menu that wide covers a good part of the screen.
+Each session is labelled `<name>`, where the name is the first of these the record has: `title`,
+then `cwd`, then the raw `session` id. The record carries all three as-is and **the pet** picks,
+so changing the display rule never requires upgrading `remi-hook` on the remotes. Names are cut
+at 44 characters: `title` allows 80, and a menu that wide covers a good part of the screen. A
+session listed flat is prefixed with its connection (`local · dotfiles`); one inside a machine's
+submenu is not, because the row it opened from already said which machine it is on.
 
 Built fresh from `Registry::menu()` on every popup, not kept and mutated — a native menu cannot
 change while it is open, and every session row is time-dependent. Each row shows its pose and how
@@ -944,16 +994,30 @@ long ago its session was last heard from, so one that died without ending is rec
 session that ended reads `offline` for 10 s and then leaves the menu — unless it is pinned, in
 which case it stays until another session or Auto is chosen (§4.3).
 
-**Sessions are listed flat**, though `Registry::menu` groups them by connection and then harness:
-the list is short and one level reads faster than three. The harness is named in a row only where
-a connection is running more than one, which is the only case where it tells two rows apart
-(§3.6's first obligation is about identity, not about always printing it). A connection with no
-sessions, or one whose source has dropped, gets a disabled row of its own, so a host that is idle
-or down stays visible rather than silently vanishing.
+**This machine's sessions are flat and first.** It is always connected, needs no configuring, and
+is where most sessions are; one level reads faster than two for the rows the user actually picks
+from. The harness is named in a row only where a connection is running more than one, which is the
+only case where it tells two rows apart (§3.6's first obligation is about identity, not about
+always printing it).
+
+**Every other machine is a submenu**, listing its sessions and then what can be done about the
+connection — Connect, Cancel while connecting, or Disconnect. A host is something to act on and
+not merely a heading, which is what earns the extra level; nesting is also what stops a
+`~/.ssh/config` with nine hosts in it burying the sessions. Each is built from the same
+`Registry::menu` snapshot, so a machine with no sessions, one still connecting, and one whose
+source has dropped each stay visible with a reason rather than silently vanishing.
+
+⚠️ **What nesting costs is the glance that says which machine wants attention**, so the host's own
+row pays it back: `theresa — 2 sessions, 1 waiting`. Those are counts, not a merged state — the
+pet renders one session and only one, and no priority rule exists anywhere in the system (brief
+§4). The waiting count is there because an agent blocked on the user, on a machine whose submenu
+is closed, is the exact thing this project exists to make noticeable.
 
 The selected session is ticked, and clicking a row pins it; **Follow most recent** is ticked
 instead under `Selection::Auto`, and is how the user gets back to it. Selection persists to config
-as either `auto` or a pinned `(connection, harness, session)`. Size applies immediately — the
+as either `auto` or a pinned `(connection, harness, session)`. A pin on a session belonging to a
+machine that is then disconnected is *kept*, not thrown away: the registry already falls back to
+Auto for a session it has never heard of, so reconnecting brings the selection back with it. Size applies immediately — the
 renderer refits itself to whatever the window is — and persists the same way; a hand-written pixel
 count in the config ticks none of the three, which is the truth.
 
@@ -977,9 +1041,11 @@ full-screen app covers it, the tray is the only way to reach the menu or quit. T
 convenience rather than the only way back, which is why it comes after the context menu rather
 than with it.
 
-**Add host…** opens the install dialog (§6.1): pick a target and a harness, and the pet runs
-the installer for you. Removing a connection from Settings offers to run `remi-hook uninstall`
-on it — offered, never automatic, and never on a mere disconnect (§6.2).
+**Installing to a host from the menu is postponed** (decided 2026-09-14). Connect assumes
+`remi-hook` is already on the machine and says `remi-hook is not installed there` when it is not,
+which is a clear enough answer to act on. The install dialog of §6.1 — pick a target and a
+harness, press Install — is still the intended shape, and Disconnect will never run
+`remi-hook uninstall`: removing a *host* may offer that, a disconnect never does (§6.2).
 
 ### 5.3 The renderer seam
 
@@ -1057,9 +1123,8 @@ name = "local"
 kind = "local"
 
 [[connections]]
-name = "plume"
-kind = "ssh"
-ssh_host = "plume"             # whatever you already type after `ssh`
+name = "theresa"
+kind = "ssh"                   # `host = "…"` only when the ssh name differs from the connection's
 
 [[connections]]
 name = "home"
@@ -1072,6 +1137,12 @@ username = "remi-pet"
 A connection is a *source*, not a host — the same physical machine reached two ways is two
 connections, and the registry deduplicates nothing, deliberately. If that turns out to be
 confusing in practice it is a display concern, not a data-model one.
+
+⚠️ **`connections` is the list of sources started at launch, and nothing else.** It is not the
+list of machines the menu offers — that is this list plus every host in `~/.ssh/config` (§4.4).
+The default is `local` alone; pressing Connect on a host appends it here and Disconnect removes
+it, which is the whole of how a host is remembered across a restart. Editing it by hand works
+the same way.
 
 Config is written on change (selection, window move — debounced ~1 s), not only on quit, so a
 crash doesn't lose the window position.
@@ -1384,8 +1455,8 @@ something end-to-end works before any infrastructure exists.
 | **M0** | Workspace scaffold; `remi-core` with `PetState`, `SessionRecord`, `Signal`/`Reducer`, `Registry` + tests | `cargo test -p remi-core` green |
 | **M1** | Transparent, borderless, always-on-top Tauri window on macOS, **with a WebGL canvas compositing in it** | Screenshot: pet over a text editor, no chrome, no black box behind the canvas |
 | **M2** | Spine renderer: all 7 states switchable from a debug key, with blended transitions | Cycling states looks right ✅. Battery measurement **dropped** from the exit criterion — see below |
-| **M3** | `remi-hook signal` + Claude Code adapter + `local` source + session menu + tray, config and window position persist | Run Claude in another terminal on the laptop; pet tracks it. Approve a permission prompt and the waiting pose **clears**. Restart restores position and selection. |
-| **M4** | `ssh` source against `plume` | Detach zellij, run Claude on `plume`, pet tracks it; menu lists both machines' sessions |
+| **M3** | `remi-hook signal` + Claude Code adapter + `local` source + session menu, config and window position persist | Run Claude in another terminal on the laptop; pet tracks it. Approve a permission prompt and the waiting pose **clears**. Restart restores position and selection. ✅ |
+| **M4** | `ssh` source against `theresa` | Detach zellij, run Claude on `theresa`, pet tracks it; menu lists both machines' sessions |
 | **M4b** | CI: a `v*` tag publishes `remi-hook` for all five targets, `install.sh` + `SHASUMS256.txt`, and both GUI bundles | `curl …/install.sh \| sh` on a fresh remote installs, and `remi-hook setup --check` passes there |
 | **M5** | Mosquitto deployed; `mqtt` source + hook forwarder | `mosquitto_sub` sees retained messages; pet tracks `plume` with the ssh source disabled |
 | **M6** | Windows build + validation | M1 and M3 criteria, on Windows |
@@ -1400,12 +1471,41 @@ and `source::local` (`StateDirWatch`), all with unit tests. `remi-hook` implemen
 `state`, `snapshot` and `watch`, and `signal` has run live under real Claude Code hooks on the
 Linux dev box. Session titles are not read yet.
 
-**M3 has everything but the tray, 2026-09-14.** The pet follows local Claude Code sessions
+**M3 is met, 2026-09-14** — observed on the dev Mac against a real Claude Code session, waiting
+pose and all. The tray is **postponed**: its whole job is reaching the menu when the pet is
+covered or awkwardly placed, and right-clicking the pet already reaches it.
+
+**M4's code is written, 2026-09-14; it has not been run against a remote yet.**
+`source/ssh.rs` watches one host — spawn, read a listing per line, explain the failure,
+reconnect with backoff, and stop on demand — with twelve tests that drive it against a local
+`sh` instead of a network. `source/ssh_config.rs` reads the host *names* out of the user's own
+`~/.ssh/config`, so a machine the user can already reach is one the pet offers. The registry
+grew `Connecting` and `Disconnected` statuses and `declare`, the menu grew a submenu per machine
+with Connect/Disconnect, and the config's `connections` list became "what to start at launch".
+What M4 still owes is the exit criterion: `remi-hook` built and installed on `theresa`, Claude
+Code running there, and the pet seen to follow it.
+
+⚠️ **`plume` is not the M4 host; `theresa` is.** Probed 2026-09-14: `plume` has no zellij, no
+node and no rust, while `theresa` has zellij 0.45.1, cargo 1.97.0 and git — so `remi-hook` can
+be built natively *on* it and M4 needs no cross-compilation, no musl toolchain and no
+`install.sh`. Neither machine has Claude Code on it yet. The real ssh invocation was tried
+against `theresa` and returns 127 with the shell's own "no such file or directory", which is the
+path `explain` turns into *remi-hook is not installed there*.
+
+**The tray, and the earlier note that M3 had everything but it, 2026-09-14.** The pet follows local Claude Code sessions
 end to end: `source::local` feeds a registry thread, which emits `pet://state`, and the window
 remembers its size and position. Right-clicking Remi now opens the session menu (§5.2) — pick a
 session, follow the most recent one, change size, quit — and both choices persist to
-`config.toml`. What M3 still owes: `tray.rs`, and the exit criterion itself, which is a live run
-against real Claude Code with an approval prompt approved and the waiting pose seen to clear.
+`config.toml`.
+
+One thing about the tray is worth keeping, because it is not visible from the outside: **a tray
+menu cannot be attached to the icon here.** An attached menu is opened by the OS, which shows
+whatever was attached last, and every row of this one is time-dependent — so it would need
+rebuilding on a timer for the life of the process. There is no rebuild-before-it-opens hook
+either: Tauri dispatches tray events through the event-loop proxy (`app.rs`), so the handler runs
+*after* the OS has already opened an attached menu. The tray therefore has to pop the menu itself
+on the click event, off the main thread, with the pet focused first — a menu popped by an app
+that is not frontmost misbehaves on both platforms.
 
 **M1 passed on the M2 MacBook, 2026-09-14** — observed, not reasoned about. `remi-desktop`
 is a real Tauri 2.11.5 shell (`tauri-build` 2.6.3, no `cmake`, no node, no `cargo-tauri`
@@ -1436,10 +1536,10 @@ in front of someone all day.
 unblocked: port the `tools/spine-viewer` render loop into `renderer/spine.js` and measure
 idle battery cost.
 
-Later, unsequenced: Codex adapter (§3.6); a shared source lifecycle, or a source trait, once
-`ssh` and `mqtt` exist (§4.4); local IME indicator; phone push on
-`WaitingForInput`; `remi-agent` with a persistent connection for real LWT; `07other-to-view`
-re-fetch or re-export.
+Later, unsequenced: `tray.rs` (above); Codex adapter (§3.6); a shared source lifecycle, or a
+source trait, once `ssh` and `mqtt` exist (§4.4); installing `remi-hook` to a host from the menu
+(§5.2, §6.1); local IME indicator; phone push on `WaitingForInput`; `remi-agent` with a
+persistent connection for real LWT; `07other-to-view` re-fetch or re-export.
 
 **M8 is deliberately last and deliberately cheap.** It is the test of whether §3.5 actually
 holds: if adding OpenCode costs more than one file under `harness/` plus a config variant, the
@@ -1492,11 +1592,15 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
 
 1. **Does the pet ever show more than the selected session?** Currently no — one session is
    rendered and the rest live in the menu. A small badge ("2 other sessions waiting") is the
-   obvious middle ground, and would want a rule for what counts as worth surfacing.
+   obvious middle ground, and would want a rule for what counts as worth surfacing. Half of this
+   now exists in the menu: a machine's row carries how many of its sessions are waiting (§5.2).
+   What is still open is whether anything reaches the *pet* itself.
 2. **Does the local source need a doorbell socket?** File + `notify` is the v1 answer (§3.1).
    If FSEvents coalescing on macOS adds visible lag at M3, the fix is an optional unix-socket
    poke alongside the write. Measure before adding.
 3. **Windows dev/test machine** — availability still unconfirmed (brief §8), which gates M6.
+   The `ssh` source's tests are Unix-only, for `sh`, so M6 is also their first run on Windows.
+   OpenSSH ships with Windows 10 1803+, so the source itself should need nothing.
 4. **Where Mosquitto runs**, and cert/auth specifics (brief §10). Gates M5 only.
 5. **Do Codex approval requests reach the rollout log?** Unverified — the sampled session ran
    a permissive sandbox and was never asked anything (§3.6). Ten-minute experiment when Codex
@@ -1507,10 +1611,14 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
    Gatekeeper quarantine from a downloaded `.dmg`, and it costs money; Windows SmartScreen
    wants an EV cert or download reputation. Until then the release notes carry the
    `xattr` incantation, which is a real tax on anyone who is not the author.
-7. **Does `install.sh` need to handle a non-`~/.local/bin` layout?** It assumes a writable
+7. **How does `remi-hook` get onto a host, before §6.1's installer exists?** By hand, and for
+   `theresa` that means building it there (it has cargo). The pet says *remi-hook is not
+   installed there* when it is missing, which is enough to act on. Installing from the menu is
+   postponed rather than dropped (§5.2).
+8. **Does `install.sh` need to handle a non-`~/.local/bin` layout?** It assumes a writable
    `~/.local/bin` and `$HOME`. A remote where that is not true (a locked-down shared box)
    would need `--prefix`. Cheap to add; not worth guessing at before someone hits it.
-8. **Where does the release actually build and publish?** §7 and decision #26 say "public repo,
+9. **Where does the release actually build and publish?** §7 and decision #26 say "public repo,
    GitHub Actions on a `v*` tag", but `origin` is self-hosted Forgejo/Gitea
    (`git.unlockableworld.com/unlockable/remi-desktop`). Three options: mirror to a public
    GitHub repo and keep the §7 matrix verbatim; port it to Forgejo Actions (largely

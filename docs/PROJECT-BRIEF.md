@@ -162,8 +162,15 @@ a home server, so this is not a blocker).
 
 The pet **renders one session at a time**, chosen by the user from a menu on right-click (and
 the identical menu on the tray), the way VS Code's remote picker works. Sessions from every
-configured connection are listed; only the selected one is drawn. The default selection is
+*connected* source are listed; only the selected one is drawn. The default selection is
 "follow most recent", a deterministic tiebreak on `ts`.
+
+**Which sources are connected is the user's call, one machine at a time** (decided 2026-09-14).
+This machine is always watched. Every host in `~/.ssh/config` is offered in the menu from the
+first launch, and none is connected to until the user presses Connect on it — so the pet never
+spends its first seconds failing to reach machines nobody asked about, and never holds an ssh
+connection open to a host the user does not care about today. Connecting remembers the host, so
+it comes back on the next launch. Plan §4.4 and §5.2.
 
 Still explicitly NOT aggregating — because only one session is ever rendered, no priority
 merge rule exists anywhere in the system. Selection is the user's, not the app's.
@@ -319,7 +326,14 @@ Swift 6.3.3 is available via CLT but is no longer part of the plan.
 
 **SSH hosts** (`~/.ssh/config`): `plume`, `theresa`, `lappland`, `whisperain` (all
 `*.anything.moe`), plus `congestion`, `newcon`, `byte119`, `byte133`, `cadlinux`.
-No `ControlMaster` configured yet (only needed for the `ssh cat` fallback path).
+No `ControlMaster` configured — and the pet passes `ControlMaster=no` of its own accord, for a
+reason worth reading in plan §4.4.
+
+**The remote for M4 is `theresa`, not `plume`** ✅ probed 2026-09-14. All four `*.anything.moe`
+boxes are Linux x86_64. `plume` is bare — no zellij, no node, no rust. `theresa` has
+zellij 0.45.1, cargo 1.97.0 and git, so `remi-hook` can be built natively on it and the whole
+cross-compilation question is deferred to M4b with nothing lost. ❓ **Claude Code is not
+installed on any of them yet**, which is what M4's exit criterion still needs.
 
 ❓ **Windows dev/test machine availability is unknown** — needs confirming before Windows
 support can actually be validated.
@@ -337,6 +351,8 @@ broker). This section is left as a pointer only so the two files cannot drift.
 ## 10. Open questions ❓
 
 - Where exactly does Mosquitto run, and what auth/TLS setup? (user has domains + home server)
+- ❓ **Which remote gets Claude Code**, and how `remi-hook` gets onto it before the installer of
+  plan §6.1 exists. `theresa` is the candidate and can build it from source itself (§8).
 - Topic scheme final form — is `remi/<host>/state` enough, or does it need per-session
   granularity for multiple concurrent Claude sessions on one host?
 - ~~Click-through vs draggable~~ ✅ Resolved 2026-09-14: **draggable, and click-through is
