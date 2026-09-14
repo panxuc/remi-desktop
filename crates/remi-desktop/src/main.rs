@@ -1,4 +1,3 @@
-// Wiring only — window/menu/tray/bridge modules land at M3 (plan §5).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {

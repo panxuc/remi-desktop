@@ -201,16 +201,15 @@ struct SetupArgs {
     check: bool,
 }
 
-/// What commands read from the outside world, gathered once in `main` so that handlers take
-/// it as input instead of reaching for the environment, the clock, or the process themselves.
+/// The outside world as it was when the command started: handlers take this instead of
+/// reaching for the environment, the clock, or the process themselves.
 struct Env {
     store: Store,
     /// Unix seconds when the command started.
     now: i64,
-    /// Last component of the directory the hook was started in. Never the full path, which
-    /// would reveal where the user keeps things.
+    /// Last component of the directory the hook was started in, never the full path.
     cwd_name: Option<String>,
-    /// Where this program is, which is what `setup` makes hooks run. `None` if the OS won't
+    /// This program's own path, which is what `setup` makes hooks run. `None` if the OS won't
     /// say.
     exe: Option<PathBuf>,
     /// Claude Code's user settings file.

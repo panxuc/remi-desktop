@@ -101,12 +101,11 @@ pub struct HarnessMenu {
     pub sessions: Vec<SessionEntry>,
 }
 
+/// Every session the pet has heard of, across all connections, and which of them Remi shows.
 #[derive(Debug, Default)]
 pub struct Registry {
     sessions: BTreeMap<SessionKey, StoredSession>,
     connections: BTreeMap<ConnectionId, ConnectionStatus>,
-    /// Kept here rather than by the UI, because whether an ended session may be dropped
-    /// depends on whether it is pinned.
     selection: Selection,
 }
 
@@ -239,22 +238,19 @@ impl Registry {
     }
 }
 
-/// A session's current record, when the pet first heard it, and whether it has ended.
 #[derive(Clone, Debug)]
 struct StoredSession {
     record: SessionRecord,
-    /// On the pet's own clock, never the writer's, so clock skew between machines can neither
-    /// cut `Proud` short nor make a live session look hours old.
+    /// When this record arrived, on the pet's own clock rather than the writer's.
     received: Instant,
-    /// When the pet learned the session had ended, on its own clock. `None` while it is live.
+    /// When the pet learned the session had ended. `None` while it is live.
     ended: Option<Instant>,
 }
 
 impl StoredSession {
-    /// `record`, heard at `now`, replacing `previous`. A session heard from is live, even if it
-    /// had ended. Hearing the same record again keeps the original arrival time: a source
-    /// re-attaching resends every record, and that must not restart `Proud` or reset "last
-    /// heard". Any real write changes at least `ts`.
+    /// `record`, heard at `now`, replacing `previous`. A session heard from is live again, even
+    /// if it had ended. An identical record — what a source re-attaching resends — keeps the
+    /// original arrival time, since any real write changes at least `ts`.
     fn new(record: SessionRecord, previous: Option<&StoredSession>, now: Instant) -> Self {
         let received = previous
             .filter(|stored| stored.record == record)
@@ -266,8 +262,8 @@ impl StoredSession {
         }
     }
 
-    /// Whether the menu and Auto still show this session: always while it is live, for
-    /// [`ENDED_SHOWN_FOR`] after it ends, and for as long as it is pinned.
+    /// Always while the session is live, for [`ENDED_SHOWN_FOR`] after it ends, and for as
+    /// long as it is pinned.
     fn is_shown(&self, key: &SessionKey, selection: &Selection, now: Instant) -> bool {
         match self.ended {
             None => true,

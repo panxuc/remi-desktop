@@ -1,7 +1,6 @@
 //! What agent harnesses report, in one vocabulary shared by all of them, and the rules that
 //! turn it into poses. Each harness adapter translates its own events into [`Signal`]s; this
-//! module is the only place that decides which pose a signal produces, so the policy is
-//! written down once rather than once per harness.
+//! module is the only place that decides which pose a signal produces.
 
 use std::time::Duration;
 

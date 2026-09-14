@@ -31,23 +31,29 @@ user approval**, so the user notices without watching the terminal.
 
 ### 2.1 GIFs (v1 render path)
 
-`assets/`, all **360×360**. Note GIF only has 1-bit transparency — anti-aliased edges are
-matted, so they fringe slightly on an arbitrary background. Frame counts re-measured with
-`ffprobe` 2026-09-07.
+`assets/`, **360×360 except `07`**. Note GIF only has 1-bit transparency — anti-aliased edges
+are matted, so they fringe slightly on an arbitrary background; that limit is why Spine is the
+v1 renderer (§11), and it was confirmed against the real compositor at plan M1 — the WebGL path
+carries true 8-bit alpha, the GIF path cannot. Re-verified with `file` + `ffprobe` 2026-09-14:
+all seven are now genuine GIFs, and two were renamed since the 09-07 measurement.
 
-| file | frames | duration |
-|---|---|---|
-| `01writing.gif` | 17 | 1.14 s |
-| `02write-to-view.gif` | 17 | 1.14 s |
-| `03pride.gif` | 31 | 2.07 s |
-| `04thinking.gif` | 41 | 2.74 s |
-| `05waiting-for-input.gif` | 41 | 2.74 s |
-| `06view.gif` | 61 | 4.07 s |
+| file | frames | duration | size | Spine equivalent |
+|---|---|---|---|---|
+| `01writing.gif` | 17 | 1.14 s | 360×360 | `d` |
+| `02intermittent-writing.gif` | 17 | 1.14 s | 360×360 | `d_win` |
+| `03pride.gif` | 31 | 2.07 s | 360×360 | `c` |
+| `04thinking.gif` | 41 | 2.74 s | 360×360 | `b` |
+| `05waiting-for-input.gif` | 41 | 2.74 s | 360×360 | `e` |
+| `06view.gif` | 61 | 4.07 s | 360×360 | `a` |
+| `07view-with-pen.gif` | 158 | 4.74 s | **257×290** | `a_win` |
 
-⚠️ `07other-to-view.gif` is **not a GIF** — it's a saved GitHub HTML page (`</html>` at EOF).
-The raw blob was never downloaded. Source repo, named in its `<title>`:
-`HanaAyane/remielle-codex-pet`, `gif/3.gif @ 7a86d4d`. Either re-fetch from
-`raw.githubusercontent.com` or export it from the Spine asset (§2.2), which contains it.
+✅ **`07` is resolved.** It was a saved GitHub HTML page; the raw blob has since been fetched
+and it is now a real GIF. Two things about it still differ from the rest: it is **257×290, not
+360×360**, so `renderer/gif.js` must not assume one frame size, and at 158 frames it is nearly
+triple the next-densest file. Neither matters unless the GIF fallback is ever actually used.
+
+The `02`/`07` names now match the Spine `_win` transition pair (§2.2) rather than describing a
+crossfade between poses, which is the mapping the reducer already assumes.
 
 ### 2.2 Spine asset ✅ — same character, same animations, better
 
@@ -107,12 +113,20 @@ remi-desktop/   # Tauri shell: transparent window, tray icon, host dropdown, GIF
 remi-hook/      # tiny CLI invoked by Claude Code hooks on the remote machine
 ```
 
-### Fallback if Tauri disappoints
+### Fallback if Tauri disappoints — ✅ not needed
 
+**Tauri did not disappoint.** Plan M1 passed on the dev Mac 2026-09-14: a transparent
+always-on-top borderless window with a **WebGL2 canvas compositing inside it**, no opaque box,
+and a premultiplied alpha ramp fading cleanly to nothing — so true 8-bit alpha survives
+WKWebView and the macOS compositor. That was the one result that could have invalidated this
+section. Details and the two Tauri traps it surfaced are in plan §5.1 and §9.
+
+The fallback is kept on the page because it stays cheap, not because it is expected:
 `egui`/`eframe` — pure Rust, no webview, `ViewportBuilder` has `with_transparent`,
 `with_always_on_top`, `with_mouse_passthrough` directly. Costs: decode GIF frames manually
 (`image` crate, `gif` feature, ~40 lines) + separate `tray-icon` crate. Roughly one extra day.
-Keeping `remi-core` UI-free makes this a pivot, not a rewrite.
+Keeping `remi-core` UI-free makes this a pivot, not a rewrite — and `tools/spine-viewer` is
+already a working `rusty_spine` spike of it.
 
 ---
 
@@ -329,8 +343,12 @@ broker). This section is left as a pointer only so the two files cannot drift.
   click-through. Undecided.
 - Autostart on login (macOS `LaunchAgent`, Windows registry `Run` key / Startup folder).
 - Window position persistence across restarts.
-- Does the repo get renamed? Current name `touchbar-remi` no longer reflects the plan;
-  new project folder is expected to be `remi-desktop`.
+- ~~Does the repo get renamed?~~ ✅ Done — it is `remi-desktop`, with `origin` at
+  `git.unlockableworld.com/unlockable/remi-desktop`.
+- ❓ **That remote is self-hosted Forgejo/Gitea, but plan §7 and decision #26 specify GitHub
+  Actions and a public GitHub release for `install.sh` + binaries.** Either mirror to GitHub
+  for releases, or port the release matrix to Forgejo Actions and host the assets there.
+  Gates M4b; costs nothing to leave open until then. Recorded as plan §12.8.
 - Do Codex approval requests reach its rollout log? Unverified, and it decides whether Codex
   can ever show the waiting pose (§12, plan §12).
 
@@ -373,6 +391,10 @@ Verified empirically, not read off the JSON:
 ### Decision ✅ — Spine is the v1 renderer
 
 Decided 2026-09-08. Not a v1.1 swap: the pet ships with Spine from the start.
+**Vindicated 2026-09-14** — the hard precondition below ("prove a transparent WebGL canvas
+composites inside a transparent webview") was tested at plan M1 and holds, including the
+8-bit alpha that motivated this whole section. `renderer/gif.js` is now a contingency nobody
+expects to need rather than a live fallback.
 
 The GIF-first ordering was only ever worth it if it saved work, and it doesn't. The
 transparency milestone has to prove a **transparent WebGL canvas composites inside a
@@ -385,7 +407,9 @@ and `renderer/gif.js` is kept as a ~40-line fallback behind that same contract i
 WebGL canvas doesn't composite. `remi-core` stays UI-free either way.
 
 The open cost is battery: a 60 fps GPU loop in an always-on-top window on an 8 GB M2. It gets
-**measured** at plan milestone M2, with occlusion-pausing as the first mitigation.
+**measured** at plan milestone M2, with occlusion-pausing as the first mitigation. M1's probe
+ran an unthrottled `requestAnimationFrame` loop and is a fair stand-in for that cost, but no
+power measurement was taken from it — M2 still owes the number.
 
 Superseded: an earlier reading of this asset claimed the animations were five costume
 variants with no mapping to `PetState`. That was wrong — it was inferred from filename

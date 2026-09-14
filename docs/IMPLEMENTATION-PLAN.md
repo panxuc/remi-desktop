@@ -15,7 +15,7 @@
 
 | # | Question | Decision | Where |
 |---|---|---|---|
-| 1 | GUI stack | **Tauri v2 + Rust**. `egui`/`eframe` is the de-risked fallback | brief §3, §11 |
+| 1 | GUI stack | **Tauri v2 + Rust** — ✅ proven at M1, transparent WebGL composites. `egui`/`eframe` fallback unused | brief §3, §11 |
 | 2 | Platforms | **macOS + Windows** for v1. Linux blocked on Wayland, not on toolkit | brief §7 |
 | 3 | Renderer | **Spine from day one**, not a v1.1 swap. `renderer/gif.js` kept as a fallback behind the same contract | §5.3 |
 | 4 | Frontend tooling | **No build step.** Static files, ES modules, `spine-webgl` vendored. Keeps node out of the Windows build | §5 |
@@ -829,25 +829,33 @@ that ever reconnects.
 
 ## 5. `remi-desktop`
 
+`✅` exists as of M1; everything else is still to be written.
+
 ```
 crates/remi-desktop/
-├─ Cargo.toml
-├─ build.rs                # tauri-build + asset staging (§5.5)
-├─ tauri.conf.json
+├─ Cargo.toml           ✅  tauri 2.11.5 (feature `macos-private-api`), tauri-build 2.6.3
+├─ build.rs             ✅  tauri_build::build(); asset staging (§5.5) joins it at M2
+├─ tauri.conf.json      ✅
+├─ capabilities/
+│  └─ default.json      ✅  REQUIRED — see §5.1; without it the window cannot be dragged
+├─ icons/icon.png       ✅  placeholder (sips'd from 03pride.gif); real art before M4b
 ├─ src/
-│  ├─ main.rs              # wiring only
-│  ├─ window.rs            # transparent/on-top/click-through, position persistence
-│  ├─ menu.rs              # the session menu, built from Registry::menu — shared by
-│  │                       #   the window's right-click and the tray
-│  ├─ tray.rs              # icon + the same menu + quit
-│  └─ bridge.rs            # Registry -> webview events
-└─ ui/                     # frontendDist; plain static files, no build step
-   ├─ index.html
-   ├─ app.js               # receives state events, drives the active renderer
+│  ├─ main.rs           ✅  wiring only — currently just Builder::default().run()
+│  ├─ window.rs             transparent/on-top/click-through, position persistence
+│  ├─ menu.rs               the session menu, built from Registry::menu — shared by
+│  │                          the window's right-click and the tray
+│  ├─ tray.rs               icon + the same menu + quit
+│  └─ bridge.rs             Registry -> webview events
+└─ ui/                  ✅  frontendDist; plain static files, no build step
+   ├─ index.html        ✅  #root[data-tauri-drag-region] + full-bleed canvas
+   ├─ m1-webgl.js       ✅  the M1 transparency probe — DELETE when spine.js lands
+   ├─ app.js                receives state events, drives the active renderer
    ├─ renderer/{spine,gif}.js
    ├─ vendor/spine-webgl.js
-   └─ assets/              # staged by build.rs — gitignored, never edited by hand
+   └─ assets/               staged by build.rs — gitignored, never edited by hand
 ```
+
+`gen/` and `ui/assets/` are gitignored by `crates/remi-desktop/.gitignore`.
 
 ### 5.1 Window configuration
 
@@ -856,9 +864,24 @@ crates/remi-desktop/
 
 ⚠️ **macOS requires `app.macOSPrivateApi: true`** for a genuinely transparent window. That
 flag makes the app ineligible for the App Store — irrelevant here (private, personal use) but
-it must be set explicitly or transparency silently under-delivers. M1 proves this first.
+it must be set explicitly or transparency silently under-delivers. ✅ Confirmed at M1 — it is
+set in `tauri.conf.json` and transparency behaves.
 
-Dragging: `data-tauri-drag-region` on the root element.
+Dragging: `data-tauri-drag-region` on the root element, plus two things that are not
+optional and not discoverable from the failure:
+
+⚠️ **`core:window:default` does NOT grant `allow-start-dragging`** — it is read-only window
+info (`is-visible`, `outer-position`, `theme`, …). The drag region works by invoking a
+`start_dragging` IPC command, so `capabilities/default.json` must list
+`core:window:allow-start-dragging` *explicitly*, alongside `core:default`. Omitting the
+`capabilities/` directory entirely produces `gen/schemas/capabilities.json == {}` — zero
+permissions — and the window is simply immovable with no error anywhere. Verified 2026-09-14.
+
+⚠️ **`generate_context!` panics at compile time if `icons/icon.png` is missing**, even when
+`bundle.icon` is `[]`. A placeholder is in the tree; replace it with real art before M4b.
+
+Anything covering the drag region needs `pointer-events: none` — the renderer canvas is
+full-bleed, so without it the root element never sees the mousedown.
 
 ### 5.2 The session menu
 
@@ -1266,11 +1289,25 @@ something end-to-end works before any infrastructure exists.
 | **M7** | Autostart on login, both platforms | Reboot, pet is there |
 | **M8** | OpenCode adapter (plugin, SSE fallback) | Run OpenCode and Claude Code on the same box; menu lists both, labelled by harness; each drives the right pose |
 
-**Where we are — 2026-09-14.** **M0's exit criterion is met.** `remi-core` has `state`,
+**Where we are — 2026-09-14.** **M0 and M1's exit criteria are both met.** `remi-core` has `state`,
 `record`, `store`, `signal` (the reducer), `harness` (Claude Code stdin parsing), `registry`,
 and `source::local` (`StateDirWatch`), all with unit tests. `remi-hook` implements `signal`,
 `state`, `snapshot` and `watch`, and `signal` has run live under real Claude Code hooks on the
-Linux dev box. Session titles are not read yet. Nothing after M0 has been started.
+Linux dev box. Session titles are not read yet.
+
+**M1 passed on the M2 MacBook, 2026-09-14** — observed, not reasoned about. `remi-desktop`
+is a real Tauri 2.11.5 shell (`tauri-build` 2.6.3, no `cmake`, no node, no `cargo-tauri`
+CLI — `cargo run -p remi-desktop` is the whole dev loop). A WebGL2 canvas clearing to
+`rgba(0,0,0,0)` composites correctly inside the transparent webview: **no opaque box behind
+it**, and a premultiplied alpha ramp fades cleanly to nothing at the edges, so **true 8-bit
+alpha survives the compositor** — the property GIF's 1-bit transparency structurally cannot
+give us (brief §11). Borderless, shadowless, always-on-top and draggable all confirmed by
+eye. The probe lives at `ui/m1-webgl.js` and is throwaway once `renderer/spine.js` lands.
+
+**This closes the stack question.** §0.1 and brief §3's `egui` fallback, and §0.3's
+`renderer/gif.js` fallback, are no longer on the critical path — neither was needed. M2 is
+unblocked: port the `tools/spine-viewer` render loop into `renderer/spine.js` and measure
+idle battery cost.
 
 Later, unsequenced: Codex adapter (§3.6); a shared source lifecycle, or a source trait, once
 `ssh` and `mqtt` exist (§4.4); local IME indicator; phone push on
@@ -1345,3 +1382,10 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
 7. **Does `install.sh` need to handle a non-`~/.local/bin` layout?** It assumes a writable
    `~/.local/bin` and `$HOME`. A remote where that is not true (a locked-down shared box)
    would need `--prefix`. Cheap to add; not worth guessing at before someone hits it.
+8. **Where does the release actually build and publish?** §7 and decision #26 say "public repo,
+   GitHub Actions on a `v*` tag", but `origin` is self-hosted Forgejo/Gitea
+   (`git.unlockableworld.com/unlockable/remi-desktop`). Three options: mirror to a public
+   GitHub repo and keep the §7 matrix verbatim; port it to Forgejo Actions (largely
+   compatible, but the runner images and the release-asset API differ) and host assets there;
+   or build locally and upload by hand until it hurts. `install.sh` hard-codes whichever host
+   wins, so this wants deciding before M4b, not during it. Nothing before M4b is affected.

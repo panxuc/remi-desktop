@@ -1,6 +1,4 @@
-// M1 probe (plan §9): does a transparent WebGL canvas composite inside a transparent
-// webview? A GIF/<img> would not answer this — Spine is the v1 renderer, so the canvas
-// case is the one that can invalidate the stack choice.
+// Probe: does a transparent WebGL canvas composite inside a transparent webview?
 //
 // Pass  = a spinning triangle over the desktop, its edges fading smoothly to nothing.
 // Fail  = an opaque black (or white) 360x360 box behind it.
@@ -14,7 +12,7 @@ const gl = canvas.getContext("webgl2", {
 
 if (!gl) {
   document.body.innerHTML =
-    '<p style="color:#f66;font:14px system-ui">no webgl2 — M1 fails here</p>';
+    '<p style="color:#f66;font:14px system-ui">no webgl2</p>';
   throw new Error("webgl2 unavailable");
 }
 
@@ -32,8 +30,8 @@ void main() {
   gl_Position = vec4(p, 0.0, 1.0);
 }`;
 
-// Alpha ramps to 0 toward the triangle's rim: 1-bit transparency cannot express this,
-// so a clean gradient here is also the 8-bit-alpha check (brief §11).
+// Alpha ramps to 0 toward the triangle's rim, so a clean gradient here is also the
+// 8-bit-alpha check: 1-bit transparency cannot express it.
 const frag = `#version 300 es
 precision highp float;
 in vec3 v_rgb;

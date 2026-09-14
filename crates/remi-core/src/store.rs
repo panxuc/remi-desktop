@@ -14,8 +14,7 @@ pub const PRUNE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The directory of session state files on one machine: one directory per harness, named by
 /// its id, holding one `<session id>.json` per session with that session's current
-/// [`SessionRecord`]. Sorting by harness keeps two harnesses' sessions apart and makes the
-/// directory easy to read when debugging.
+/// [`SessionRecord`].
 #[derive(Clone, Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -248,8 +247,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     options.open(path)?.write_all(bytes)
 }
 
-/// What to do with one session's file. Deciding it is a pure function of the previous record
-/// and whatever just happened; [`Store::apply`] does the I/O.
+/// What to do with one session's file, as decided from the record it currently holds.
+/// [`Store::apply`] carries it out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
     /// Replace the session's record with this one.

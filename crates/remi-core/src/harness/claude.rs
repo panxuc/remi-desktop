@@ -8,8 +8,8 @@ use serde::Deserialize;
 use super::{Error, HookInput};
 use crate::record::SessionId;
 
-/// The fields every Claude Code hook payload shares. The rest, such as a tool's full input and
-/// output, is ignored.
+/// The fields every hook payload shares. The rest, such as a tool's input and output, is
+/// ignored.
 #[derive(Deserialize)]
 struct Payload {
     session_id: Option<SessionId>,

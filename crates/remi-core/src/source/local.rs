@@ -1,9 +1,9 @@
 //! A state dir, watched for changes: the pet's `local` connection, and what `remi-hook watch`
 //! runs on a remote, so the ssh connection hears exactly what a local one would.
 //!
-//! Every change is reported as the directory's whole listing, never as what changed. A session
-//! that ended is simply missing from the next listing, so nothing has to be worked out from
-//! file events, which each platform's watcher merges, reorders and names differently.
+//! Every change is reported as the directory's whole listing, never as what changed: a session
+//! that ended is simply missing from the next listing. Nothing is worked out from the file
+//! events themselves, which each platform's watcher merges, reorders and names differently.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};

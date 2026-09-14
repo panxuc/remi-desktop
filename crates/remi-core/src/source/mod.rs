@@ -1,6 +1,6 @@
 //! How the pet reads session records: one source per configured connection, each reporting
-//! what it hears as [`SessionUpdate`]s for the registry. Each transport has its own file here;
-//! so far only [`local`], which watches a state dir, is built.
+//! what it hears as [`SessionUpdate`]s for the registry. Each transport has its own module
+//! here.
 
 pub mod local;
 
