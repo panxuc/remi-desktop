@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use crate::record::{self, SessionRecord};
 use crate::source::SessionUpdate;
+use crate::spawn;
 
 /// What is run on the remote.
 ///
@@ -88,6 +89,9 @@ pub fn ssh_command(host: &str) -> Command {
         host,
         REMOTE_COMMAND,
     ]);
+    // On Windows this is what keeps a terminal from flashing up on every connection and every
+    // retry — see [`spawn::without_a_window`]. Elsewhere it does nothing.
+    spawn::without_a_window(&mut command);
     command
 }
 

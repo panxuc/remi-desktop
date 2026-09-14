@@ -869,6 +869,17 @@ the user's existing config applies for free** — `ProxyJump`, `IdentityFile`, a
 and would be the thing that forced users to configure the tool separately. OpenSSH ships with
 macOS and with Windows 10 1803+.
 
+⚠️ **On Windows every child is spawned with `CREATE_NO_WINDOW`** (`spawn::without_a_window`,
+called from `ssh_command`). `ssh.exe` is a console program and the pet is a GUI one with no
+console to lend it, so Windows gives the child a console of its own — and a console has a
+window. Without the flag, a terminal flashes up on every connection *and every retry*, which
+against a host that is switched off is twice a minute, for ever. The symptom appears only in a
+**release** build: a debug build is not `windows_subsystem = "windows"`, owns a console, and the
+child inherits it, so this is a fix that can look verified against the wrong binary. It is a
+named helper rather than a `cfg` at the call site because §6.1's remote install will spawn
+console programs too. Verified on Windows 2026-09-15; `ControlMaster=no` was checked there at
+the same time and is accepted silently, so the option stays unconditional.
+
 We invoke `remi-hook` by **absolute path rather than relying on `$PATH`**: `~/.local/bin` is
 frequently missing from a non-interactive ssh shell's `PATH`. Getting the binary there in the
 first place is §6.1.
@@ -1610,9 +1621,11 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
 2. **Does the local source need a doorbell socket?** File + `notify` is the v1 answer (§3.1).
    If FSEvents coalescing on macOS adds visible lag at M3, the fix is an optional unix-socket
    poke alongside the write. Measure before adding.
-3. **Windows dev/test machine** — availability still unconfirmed (brief §8), which gates M6.
-   The `ssh` source's tests are Unix-only, for `sh`, so M6 is also their first run on Windows.
-   OpenSSH ships with Windows 10 1803+, so the source itself should need nothing.
+3. **Windows dev/test machine** — a first run happened 2026-09-15 and found the console-window
+   bug above; sustained availability is still unconfirmed (brief §8), which gates M6. The `ssh`
+   source's tests are Unix-only, for `sh`, so M6 is still their first run on Windows, and
+   `CREATE_NO_WINDOW` has no test at all — `Command` exposes no getter for creation flags, so
+   it is an M6 visual check against a release build.
 4. **Where Mosquitto runs**, and cert/auth specifics (brief §10). Gates M5 only.
 5. **Do Codex approval requests reach the rollout log?** Unverified — the sampled session ran
    a permissive sandbox and was never asked anything (§3.6). Ten-minute experiment when Codex
