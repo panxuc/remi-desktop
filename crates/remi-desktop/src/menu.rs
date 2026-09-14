@@ -12,16 +12,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use remi_core::record::{HarnessId, SessionId};
-use remi_core::registry::{ConnectionStatus, Selection, SessionEntry, SessionKey};
+use remi_core::registry::{ConnectionMenu, ConnectionStatus, Selection, SessionEntry, SessionKey};
 use remi_core::source::ConnectionId;
 use remi_core::state::PetState;
 use tauri::menu::{
-    CheckMenuItemBuilder, ContextMenu, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
+    CheckMenuItem, CheckMenuItemBuilder, ContextMenu, Menu, MenuBuilder, MenuItemBuilder, Submenu,
+    SubmenuBuilder,
 };
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::bridge::{Bridge, MenuSnapshot, Message};
-use crate::config::{Config, NamedSize, Saver, SelectionConfig, Size};
+use crate::config::{Config, Connection, ConnectionKind, NamedSize, Saver, SelectionConfig, Size};
 use crate::window;
 
 /// Item ids. A session's id carries its whole [`SessionKey`], so acting on a click needs no second
@@ -31,6 +32,8 @@ use crate::window;
 /// The connection name comes last because it is the only part the user names freely, and so the
 /// only one that may contain a `:`; harness and session ids cannot (remi-core `record.rs`).
 const SESSION: &str = "session:";
+const CONNECT: &str = "connect:";
+const DISCONNECT: &str = "disconnect:";
 const FOLLOW: &str = "follow-newest";
 const SIZE: &str = "size:";
 const QUIT: &str = "quit";
@@ -50,6 +53,10 @@ enum Action {
     Follow,
     /// Show this session, and keep showing it after it ends.
     Show(SessionKey),
+    /// Start watching this machine, and remember it for next time.
+    Connect(ConnectionId),
+    /// Stop watching this machine, and forget it.
+    Disconnect(ConnectionId),
     Resize(NamedSize),
     Quit,
 }
@@ -74,52 +81,58 @@ pub fn popup(app: &AppHandle) {
     }
 }
 
-/// The menu as the user sees it: every session the pet has heard of, then how to follow the newest
-/// one instead, then the pet's own settings.
+/// The menu as the user sees it: this machine's sessions, then every other machine as a row that
+/// opens, then how to follow the newest session, then the pet's own settings.
 ///
-/// Sessions are listed flat and labelled `<connection> · <name>`, rather than nested under their
-/// connection, because the list is short and one level reads faster than three. The harness is
-/// named only where a connection is running more than one, where it is the only thing telling two
-/// otherwise identical rows apart.
+/// **This machine's sessions are flat and first.** It is always connected, needs no configuring,
+/// and is where most sessions are — and one level reads faster than two for the rows the user
+/// actually picks from.
+///
+/// **Every other machine is a submenu**, because a host is something to act on — connect,
+/// disconnect — and not merely a heading. Nesting them is also what stops a `~/.ssh/config` with
+/// nine hosts in it burying the sessions. What nesting costs is the glance that says which machine
+/// wants attention, so the host's own row pays it back: it carries how many sessions are on it and
+/// how many of those are waiting.
 fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let MenuSnapshot {
         connections,
         selection,
     } = app.state::<Bridge>().snapshot();
-    let size = app
-        .state::<Arc<Mutex<Config>>>()
-        .lock()
-        .expect("config mutex poisoned")
-        .size;
+    let (size, local) = {
+        let config = app.state::<Arc<Mutex<Config>>>();
+        let config = config.lock().expect("config mutex poisoned");
+        let local: Vec<String> = config
+            .connections
+            .iter()
+            .filter(|connection| connection.kind == ConnectionKind::Local)
+            .map(|connection| connection.name.clone())
+            .collect();
+        (config.size, local)
+    };
+    let is_local = |connection: &ConnectionMenu| {
+        local
+            .iter()
+            .any(|name| name == connection.connection.as_str())
+    };
 
     let mut menu = MenuBuilder::new(app);
-    for connection in &connections {
-        // A connection with nothing to say is still listed: a host that is down or idle staying
-        // visible is the difference between "nothing is happening there" and "I forgot about it".
-        if let ConnectionStatus::Lost { reason } = &connection.status {
-            let text = format!(
-                "{} — disconnected: {}",
-                connection.connection,
-                cut(reason, REASON_MAX)
-            );
-            menu = menu.item(&MenuItemBuilder::new(text).enabled(false).build(app)?);
-        } else if connection.harnesses.is_empty() {
+
+    for connection in connections.iter().filter(|it| is_local(it)) {
+        if connection.harnesses.is_empty() {
             let text = format!("{} — no sessions", connection.connection);
             menu = menu.item(&MenuItemBuilder::new(text).enabled(false).build(app)?);
         }
-
-        let name_harness = connection.harnesses.len() > 1;
-        for harness in &connection.harnesses {
-            for entry in &harness.sessions {
-                let item = CheckMenuItemBuilder::with_id(
-                    session_id(&entry.key),
-                    row(&connection.connection, entry, name_harness),
-                )
-                .checked(matches!(&selection, Selection::Pinned(key) if *key == entry.key))
-                .build(app)?;
-                menu = menu.item(&item);
-            }
+        for item in sessions(app, connection, &selection, Some(&connection.connection))? {
+            menu = menu.item(&item);
         }
+    }
+
+    let hosts: Vec<&ConnectionMenu> = connections.iter().filter(|it| !is_local(it)).collect();
+    if !hosts.is_empty() {
+        menu = menu.separator();
+    }
+    for host in hosts {
+        menu = menu.item(&machine(app, host, &selection)?);
     }
 
     let follow = CheckMenuItemBuilder::with_id(FOLLOW, "Follow most recent")
@@ -148,6 +161,136 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .build()
 }
 
+/// One machine's row: what it is doing, and what can be done about it.
+///
+/// Its sessions come first, because they are what the user opened the submenu for; the state of
+/// the connection and what to do about it come after, where they are out of the way of a click
+/// aimed at a session.
+fn machine(
+    app: &AppHandle,
+    connection: &ConnectionMenu,
+    selection: &Selection,
+) -> tauri::Result<Submenu<Wry>> {
+    let id = &connection.connection;
+    let mut submenu = SubmenuBuilder::new(app, summary(connection));
+
+    // A lost connection keeps its sessions, with the pose each was last seen in; a disconnected
+    // one has none, because nobody is listening to that machine at all.
+    let sessions = sessions(app, connection, selection, None)?;
+    let had_sessions = !sessions.is_empty();
+    for item in sessions {
+        submenu = submenu.item(&item);
+    }
+    if had_sessions {
+        submenu = submenu.separator();
+    }
+
+    submenu = match &connection.status {
+        ConnectionStatus::Disconnected => {
+            submenu.item(&MenuItemBuilder::with_id(format!("{CONNECT}{id}"), "Connect").build(app)?)
+        }
+        ConnectionStatus::Connecting => submenu
+            .item(
+                &MenuItemBuilder::new("Connecting…")
+                    .enabled(false)
+                    .build(app)?,
+            )
+            .item(&MenuItemBuilder::with_id(format!("{DISCONNECT}{id}"), "Cancel").build(app)?),
+        ConnectionStatus::Lost { reason } => {
+            // It is already retrying, so there is nothing here to press to make that happen; what
+            // the user needs is the reason, and a way to stop.
+            let text = format!("Reconnecting — {}", cut(reason, REASON_MAX));
+            submenu
+                .item(&MenuItemBuilder::new(text).enabled(false).build(app)?)
+                .item(
+                    &MenuItemBuilder::with_id(format!("{DISCONNECT}{id}"), "Disconnect")
+                        .build(app)?,
+                )
+        }
+        ConnectionStatus::Up => {
+            if !had_sessions {
+                submenu = submenu.item(
+                    &MenuItemBuilder::new("No sessions")
+                        .enabled(false)
+                        .build(app)?,
+                );
+            }
+            submenu.item(
+                &MenuItemBuilder::with_id(format!("{DISCONNECT}{id}"), "Disconnect").build(app)?,
+            )
+        }
+    };
+    submenu.build()
+}
+
+/// A machine's row, as read without opening it.
+///
+/// The counts are facts about the machine rather than a pose chosen for it: the pet renders one
+/// session and only one, so nothing here merges several sessions into a single state. What the
+/// waiting count *is* for is the one thing this project exists to make noticeable — an agent
+/// blocked on you, on a machine whose submenu is closed.
+fn summary(connection: &ConnectionMenu) -> String {
+    let name = &connection.connection;
+    match &connection.status {
+        ConnectionStatus::Disconnected => name.to_string(),
+        ConnectionStatus::Connecting => format!("{name} — connecting…"),
+        ConnectionStatus::Lost { reason } => {
+            format!("{name} — disconnected: {}", cut(reason, REASON_MAX))
+        }
+        ConnectionStatus::Up => {
+            let entries: Vec<&SessionEntry> = connection
+                .harnesses
+                .iter()
+                .flat_map(|harness| &harness.sessions)
+                .collect();
+            let waiting = entries
+                .iter()
+                .filter(|entry| entry.pose == PetState::WaitingForInput)
+                .count();
+            match (entries.len(), waiting) {
+                (0, _) => format!("{name} — no sessions"),
+                (total, 0) => format!("{name} — {total} session{}", plural(total)),
+                (total, waiting) => {
+                    format!(
+                        "{name} — {total} session{}, {waiting} waiting",
+                        plural(total)
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+/// One checkable row per session on a connection, newest first.
+///
+/// `prefix` names the machine in each row, for the sessions listed flat; inside a machine's own
+/// submenu it is left off, because the row it opened from already said which machine this is.
+fn sessions(
+    app: &AppHandle,
+    connection: &ConnectionMenu,
+    selection: &Selection,
+    prefix: Option<&ConnectionId>,
+) -> tauri::Result<Vec<CheckMenuItem<Wry>>> {
+    let name_harness = connection.harnesses.len() > 1;
+    let mut items = Vec::new();
+    for harness in &connection.harnesses {
+        for entry in &harness.sessions {
+            let item = CheckMenuItemBuilder::with_id(
+                session_id(&entry.key),
+                row(prefix, entry, name_harness),
+            )
+            .checked(matches!(selection, Selection::Pinned(key) if *key == entry.key))
+            .build(app)?;
+            items.push(item);
+        }
+    }
+    Ok(items)
+}
+
 /// Acts on a click. Called for every menu event in the app, including the tray's once it exists,
 /// which is why an id it does not recognise is a warning rather than a panic.
 pub fn on_event(app: &AppHandle, id: &str) {
@@ -157,6 +300,8 @@ pub fn on_event(app: &AppHandle, id: &str) {
     match action {
         Action::Follow => select(app, Selection::Auto),
         Action::Show(key) => select(app, Selection::Pinned(key)),
+        Action::Connect(connection) => connect(app, connection),
+        Action::Disconnect(connection) => disconnect(app, connection),
         Action::Resize(named) => resize(app, named),
         // The pet has no window to close and no dock icon, so this is the only way out.
         Action::Quit => app.exit(0),
@@ -172,6 +317,51 @@ fn select(app: &AppHandle, selection: Selection) {
     save(app, |config| {
         config.selection = SelectionConfig::from_selection(&selection)
     });
+}
+
+/// Starts watching a machine, and writes it into the config so the next launch starts it again.
+///
+/// Which is the whole of "remembering a host": the config's connection list *is* the set of
+/// things started at launch, so a fresh config watches this machine and nothing else, and every
+/// host beyond that is there because the user asked for it once.
+fn connect(app: &AppHandle, connection: ConnectionId) {
+    let host = ssh_host(app, &connection);
+    app.state::<Bridge>().connect(connection.clone(), host);
+    save(app, |config| {
+        if !config
+            .connections
+            .iter()
+            .any(|it| it.name == connection.as_str())
+        {
+            config
+                .connections
+                .push(Connection::ssh(connection.as_str()));
+        }
+    });
+}
+
+/// Stops watching a machine and forgets it. The machine stays in the menu for as long as
+/// `~/.ssh/config` names it — this removes the pet's interest in it, not the host.
+fn disconnect(app: &AppHandle, connection: ConnectionId) {
+    app.state::<Bridge>().disconnect(&connection);
+    save(app, |config| {
+        config
+            .connections
+            .retain(|it| it.name != connection.as_str())
+    });
+}
+
+/// What to pass to `ssh` for this connection: whatever the config says, and otherwise the
+/// connection's own name — which is the usual case, since a host is named after what the user
+/// already types to reach it.
+fn ssh_host(app: &AppHandle, connection: &ConnectionId) -> String {
+    let config = app.state::<Arc<Mutex<Config>>>();
+    let config = config.lock().expect("config mutex poisoned");
+    config
+        .connections
+        .iter()
+        .find(|it| it.name == connection.as_str())
+        .map_or_else(|| connection.to_string(), |it| it.ssh_host().to_owned())
 }
 
 /// Resizes the window and remembers the new size. The renderer refits itself to whatever it is
@@ -202,6 +392,14 @@ fn action(id: &str) -> Option<Action> {
     }
     if id == QUIT {
         return Some(Action::Quit);
+    }
+    // The whole of what follows is the connection's name, which is the user's to choose and so
+    // the one part that may hold a `:`.
+    if let Some(name) = id.strip_prefix(CONNECT) {
+        return Some(Action::Connect(ConnectionId::new(name)));
+    }
+    if let Some(name) = id.strip_prefix(DISCONNECT) {
+        return Some(Action::Disconnect(ConnectionId::new(name)));
     }
     if let Some(name) = id.strip_prefix(SIZE) {
         return match name {
@@ -234,14 +432,15 @@ fn session_id(key: &SessionKey) -> String {
 
 /// One session's row: which machine it is on, what to call it, what it is doing, and when that was
 /// last true. The last part is what gives away a session that died rather than ended.
-fn row(connection: &ConnectionId, entry: &SessionEntry, name_harness: bool) -> String {
+fn row(connection: Option<&ConnectionId>, entry: &SessionEntry, name_harness: bool) -> String {
+    let machine = connection.map_or_else(String::new, |connection| format!("{connection} · "));
     let harness = if name_harness {
         format!(" ({})", entry.key.harness)
     } else {
         String::new()
     };
     format!(
-        "{connection} · {name}{harness} — {pose}, {age}",
+        "{machine}{name}{harness} — {pose}, {age}",
         name = cut(&entry.label, NAME_MAX),
         pose = pose(entry.pose),
         age = age(entry.last_heard),
@@ -313,6 +512,43 @@ mod tests {
             panic!("{id} did not parse back to a session");
         };
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn connecting_and_disconnecting_name_the_machine() {
+        // A connection name is the user's, so it may hold the separator.
+        let Some(Action::Connect(connection)) = action("connect:home:1") else {
+            panic!("connect:home:1 did not parse as connecting");
+        };
+        assert_eq!(connection, ConnectionId::new("home:1"));
+
+        let Some(Action::Disconnect(connection)) = action("disconnect:theresa") else {
+            panic!("disconnect:theresa did not parse as disconnecting");
+        };
+        assert_eq!(connection, ConnectionId::new("theresa"));
+    }
+
+    #[test]
+    fn a_row_names_its_machine_only_where_the_menu_has_not_already() {
+        let entry = SessionEntry {
+            key: key("theresa", "claude-code", "s1"),
+            label: "dotfiles".into(),
+            pose: PetState::Writing,
+            last_heard: Duration::from_secs(2),
+            record: remi_core::record::SessionRecord::new(
+                SessionId::new("s1").unwrap(),
+                HarnessId::new("claude-code").unwrap(),
+                PetState::Writing,
+                0,
+            ),
+        };
+
+        assert_eq!(
+            row(Some(&ConnectionId::new("local")), &entry, false),
+            "local · dotfiles — writing, just now"
+        );
+        // Inside the machine's own submenu, the row it opened from already said which machine.
+        assert_eq!(row(None, &entry, false), "dotfiles — writing, just now");
     }
 
     #[test]

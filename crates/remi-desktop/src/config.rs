@@ -33,12 +33,12 @@ impl Default for Config {
             size: Size::default(),
             selection: SelectionConfig::Auto,
             window: WindowConfig::default(),
-            // A pet with no connections can never show anything, so the default is the one
-            // connection that needs no configuring: this machine.
-            connections: vec![Connection {
-                name: "local".into(),
-                kind: ConnectionKind::Local,
-            }],
+            // Only this machine to begin with. Every host in `~/.ssh/config` is *offered* in the
+            // menu, but none is connected to until the user asks: starting a connection per host
+            // at launch would spend the pet's first seconds reporting failures for machines
+            // nobody asked about. Connecting to one adds it here, so it comes back on the next
+            // launch; disconnecting takes it out again.
+            connections: vec![Connection::local()],
         }
     }
 }
@@ -174,6 +174,35 @@ impl SelectionConfig {
 pub struct Connection {
     pub name: String,
     pub kind: ConnectionKind,
+    /// For [`ConnectionKind::Ssh`]: the name to pass to `ssh`, when it differs from `name`.
+    /// Normally it does not — a connection is named after the host you already type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+impl Connection {
+    /// This machine, which needs no configuring and is never disconnected.
+    pub fn local() -> Self {
+        Self {
+            name: "local".into(),
+            kind: ConnectionKind::Local,
+            host: None,
+        }
+    }
+
+    /// A host from `~/.ssh/config`, named after itself.
+    pub fn ssh(host: &str) -> Self {
+        Self {
+            name: host.to_owned(),
+            kind: ConnectionKind::Ssh,
+            host: None,
+        }
+    }
+
+    /// What to pass to `ssh`. The connection's own name unless the config overrides it.
+    pub fn ssh_host(&self) -> &str {
+        self.host.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// ⚠️ A kind that carries its own settings, such as an ssh host, wants them as siblings of `kind`
@@ -183,8 +212,10 @@ pub struct Connection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionKind {
-    /// This machine's own state dir. The only kind implemented so far; ssh and mqtt are to come.
+    /// This machine's own state dir.
     Local,
+    /// `remi-hook watch` run over ssh on another machine.
+    Ssh,
 }
 
 impl Config {
@@ -294,13 +325,25 @@ mod tests {
             [[connections]]
             name = "local"
             kind = "local"
+
+            [[connections]]
+            name = "theresa"
+            kind = "ssh"
+
+            [[connections]]
+            name = "work"
+            kind = "ssh"
+            host = "work.example"
         "#;
         let config: Config = toml::from_str(text).unwrap();
         assert_eq!(config.renderer, Renderer::Spine);
         assert_eq!(config.size, Size::Named(NamedSize::Medium));
         assert_eq!(config.window.x, Some(1620.0));
         assert_eq!(config.selection.to_selection(), Selection::Auto);
-        assert_eq!(config.connections.len(), 1);
+        assert_eq!(config.connections.len(), 3);
+        // A connection is named after the host unless the file says otherwise.
+        assert_eq!(config.connections[1].ssh_host(), "theresa");
+        assert_eq!(config.connections[2].ssh_host(), "work.example");
     }
 
     #[test]

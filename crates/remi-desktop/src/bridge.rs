@@ -6,6 +6,7 @@
 //! are about time passing rather than about anything arriving: `Proud` fades to `Idle` on its own,
 //! and an ended session leaves the menu on its own.
 
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 use remi_core::record::SessionRecord;
 use remi_core::registry::{ConnectionMenu, Registry, Selection, SessionEntry};
 use remi_core::source::local::StateDirWatch;
-use remi_core::source::{ConnectionId, SessionUpdate};
+use remi_core::source::{ConnectionId, SessionUpdate, ssh, ssh_config};
 use remi_core::state::PetState;
 use remi_core::store::Store;
 use serde::Serialize;
@@ -87,6 +88,9 @@ pub enum Message {
     },
     /// The user picked a session, or went back to following the newest.
     Select(Selection),
+    /// Connections the pet could use. They are listed in the menu before anything has been
+    /// heard from them, which is how a host nobody has connected to yet can be offered at all.
+    Declare(Vec<ConnectionId>),
     /// Someone is about to open the session menu and needs its contents.
     Menu(Sender<MenuSnapshot>),
     Tick,
@@ -98,6 +102,9 @@ pub enum Message {
 pub struct Bridge {
     tx: Sender<Message>,
     latest: Arc<Mutex<StatePayload>>,
+    /// The ssh connections currently being watched, so they can be stopped again. `local` is
+    /// never in here: it is always on, and there is nothing to stop.
+    ssh: Arc<Mutex<HashMap<ConnectionId, ssh::Stop>>>,
 }
 
 impl Bridge {
@@ -132,6 +139,66 @@ impl Bridge {
         self.latest.lock().expect("bridge mutex poisoned").clone()
     }
 
+    /// Starts watching a host over ssh, unless it is being watched already. Returns at once:
+    /// connecting takes seconds, and the menu says so while it happens.
+    pub fn connect(&self, connection: ConnectionId, host: String) {
+        let stop = ssh::Stop::new();
+        {
+            let mut watching = self.ssh.lock().expect("bridge mutex poisoned");
+            if watching.contains_key(&connection) {
+                return tracing::debug!("already watching {connection}");
+            }
+            // The handle is made first and shared, rather than inserted and read back: reading it
+            // back could find a disconnect had already taken it, and there is nothing sensible to
+            // do about that but the thing this avoids having to do.
+            watching.insert(connection.clone(), stop.clone());
+        }
+
+        tracing::info!("connecting to {connection} as ssh host {host}");
+        let bridge = self.clone();
+        let watched = connection.clone();
+        let spawned = thread::Builder::new()
+            .name(format!("remi-source-{connection}"))
+            .spawn(move || {
+                let connection = watched;
+                ssh::watch(
+                    || ssh::ssh_command(&host),
+                    &stop,
+                    |update| bridge.heard(&connection, update),
+                );
+                // ⚠️ Reported from *this* thread rather than from `disconnect`, so it cannot
+                // overtake a snapshot this thread had already read when it was stopped — which
+                // would put the connection back up, with sessions nobody is listening for.
+                tracing::info!("stopped watching {connection}");
+                bridge.heard(&connection, SessionUpdate::Disconnected);
+            });
+        if let Err(err) = spawned {
+            self.ssh
+                .lock()
+                .expect("bridge mutex poisoned")
+                .remove(&connection);
+            let reason = format!("cannot start a thread for it: {err}");
+            self.heard(&connection, SessionUpdate::ConnectionLost { reason });
+        }
+    }
+
+    /// Stops watching a host. The connection keeps its place in the menu — it is still somewhere
+    /// the user can connect to — but everything it was reporting is forgotten.
+    pub fn disconnect(&self, connection: &ConnectionId) {
+        match self.stop_taking(connection) {
+            // The watch thread reports the disconnection itself, once it has actually ended.
+            Some(stop) => stop.stop(),
+            None => self.heard(connection, SessionUpdate::Disconnected),
+        }
+    }
+
+    fn stop_taking(&self, connection: &ConnectionId) -> Option<ssh::Stop> {
+        self.ssh
+            .lock()
+            .expect("bridge mutex poisoned")
+            .remove(connection)
+    }
+
     fn heard(&self, connection: &ConnectionId, update: SessionUpdate) {
         self.send(Message::Heard {
             connection: connection.clone(),
@@ -146,6 +213,7 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
     let bridge = Bridge {
         tx,
         latest: Arc::new(Mutex::new(StatePayload::of(None))),
+        ssh: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let latest = bridge.latest.clone();
@@ -165,6 +233,11 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
                         registry.apply(connection, update, now)
                     }
                     Message::Select(selection) => registry.select(selection),
+                    Message::Declare(ids) => {
+                        for id in ids {
+                            registry.declare(id);
+                        }
+                    }
                     // Answering changes nothing, so it skips the emit below rather than
                     // recomputing a payload that cannot have moved.
                     Message::Menu(reply) => {
@@ -193,14 +266,49 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
         .expect("spawning the registry thread");
 
     start_clock(bridge.clone());
+    let offered = offered(connections);
+    // One line at startup for what the menu will list, because "the host I expected is missing"
+    // is otherwise a silent disagreement between this and the user's ~/.ssh/config.
+    tracing::info!(
+        "offering {}",
+        offered
+            .iter()
+            .map(ConnectionId::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    bridge.send(Message::Declare(offered));
+
     for connection in connections {
         match connection.kind {
             ConnectionKind::Local => {
                 start_local(bridge.clone(), ConnectionId::new(&connection.name))
             }
+            // A configured ssh connection is one the user connected to before; the config is
+            // what remembers it across a restart.
+            ConnectionKind::Ssh => bridge.connect(
+                ConnectionId::new(&connection.name),
+                connection.ssh_host().to_owned(),
+            ),
         }
     }
     bridge
+}
+
+/// Every connection the menu may offer: the configured ones, then every host the user's own
+/// `~/.ssh/config` names. Nothing is connected to for being listed here — that is the point.
+fn offered(connections: &[Connection]) -> Vec<ConnectionId> {
+    let mut offered: Vec<ConnectionId> = connections
+        .iter()
+        .map(|connection| ConnectionId::new(&connection.name))
+        .collect();
+    for host in ssh_config::hosts() {
+        let id = ConnectionId::new(host);
+        if !offered.contains(&id) {
+            offered.push(id);
+        }
+    }
+    offered
 }
 
 fn start_clock(bridge: Bridge) {
