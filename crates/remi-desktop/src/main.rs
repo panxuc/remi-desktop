@@ -5,6 +5,7 @@
 
 mod bridge;
 mod config;
+mod menu;
 mod window;
 
 use std::sync::{Arc, Mutex};
@@ -31,6 +32,18 @@ fn pet_state(bridge: tauri::State<'_, Bridge>) -> StatePayload {
     bridge.current()
 }
 
+/// Opens the session menu, which `ui/app.js` asks for when the pet is right-clicked. A webview
+/// cannot draw a native menu, so the gesture is JavaScript's and the menu is Rust's.
+///
+/// ⚠️ `(async)` is load-bearing, not decoration: it runs this on a worker thread, and building or
+/// popping up a menu from the main thread deadlocks against the event loop it is waiting on
+/// (`menu::popup`). Taking the handle by value rather than `tauri::State` is part of the same
+/// thing — an off-thread command cannot borrow from the request.
+#[tauri::command(async)]
+fn context_menu(app: tauri::AppHandle) {
+    menu::popup(&app);
+}
+
 fn main() {
     // `RUST_LOG=remi_desktop=debug,remi_core=debug` turns on the per-change state lines.
     tracing_subscriber::fmt()
@@ -49,12 +62,17 @@ fn main() {
     let saver = Saver::start();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![renderer, pet_state])
+        .invoke_handler(tauri::generate_handler![renderer, pet_state, context_menu])
         .setup(move |app| {
             app.manage(config.clone());
+            app.manage(saver.clone());
 
             let bridge = bridge::start(app.handle().clone(), &connections, selection);
             app.manage(bridge);
+
+            // Every menu event in the app arrives here, which is what will let the tray carry the
+            // same menu without carrying a second handler for it.
+            app.on_menu_event(|app, event| menu::on_event(app, event.id().as_ref()));
 
             if let Some(pet) = window::pet(app.handle()) {
                 window::configure(&pet, &config, saver);

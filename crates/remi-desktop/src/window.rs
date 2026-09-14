@@ -16,9 +16,7 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
         (config.size.edge(), (config.window.x, config.window.y))
     };
 
-    if let Err(err) = window.set_size(LogicalSize::new(size, size)) {
-        tracing::warn!("setting window size: {err}");
-    }
+    resize(window, size);
 
     // No saved position on a first run: leave the window wherever the OS put it rather than
     // guessing at a corner, and remember it as soon as the user moves it.
@@ -29,6 +27,14 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
     }
 
     watch_position(window, config.clone(), saver);
+}
+
+/// Remi is square and the renderer refits itself to whatever it is given, so one number is the
+/// whole of a resize. Logical pixels, so a size means the same thing on a Retina display as off it.
+pub fn resize(window: &WebviewWindow, edge: f64) {
+    if let Err(err) = window.set_size(LogicalSize::new(edge, edge)) {
+        tracing::warn!("setting window size: {err}");
+    }
 }
 
 /// Persists the window position as the user drags it. Debounced by the [`Saver`], because a drag

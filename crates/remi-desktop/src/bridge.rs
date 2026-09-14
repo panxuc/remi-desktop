@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use remi_core::record::SessionRecord;
-use remi_core::registry::{Registry, Selection, SessionEntry};
+use remi_core::registry::{ConnectionMenu, Registry, Selection, SessionEntry};
 use remi_core::source::local::StateDirWatch;
 use remi_core::source::{ConnectionId, SessionUpdate};
 use remi_core::state::PetState;
@@ -28,6 +28,11 @@ const TICK: Duration = Duration::from_secs(1);
 
 /// The Tauri event `ui/app.js` listens for.
 const EVENT: &str = "pet://state";
+
+/// How long [`Bridge::snapshot`] waits for the registry thread to answer. The thread never
+/// blocks, so this only ever expires during shutdown; it is here so a right-click can never hang
+/// the window instead of opening a menu.
+const ANSWER_WITHIN: Duration = Duration::from_millis(500);
 
 /// What the webview is told. `label` is resolved by the registry — title, else folder, else id —
 /// so changing that rule never needs a new `remi-hook` on a remote.
@@ -63,7 +68,18 @@ impl StatePayload {
     }
 }
 
-/// Anything that can change what Remi shows.
+/// Everything the session menu shows, taken at one instant.
+///
+/// A menu is a still picture — its rows carry each session's pose and how long ago it was heard,
+/// both of which move — so it is built from one snapshot rather than from several questions asked
+/// a moment apart.
+pub struct MenuSnapshot {
+    pub connections: Vec<ConnectionMenu>,
+    pub selection: Selection,
+}
+
+/// Anything that can change what Remi shows, plus the one question that only the registry thread
+/// can answer.
 pub enum Message {
     Heard {
         connection: ConnectionId,
@@ -71,6 +87,8 @@ pub enum Message {
     },
     /// The user picked a session, or went back to following the newest.
     Select(Selection),
+    /// Someone is about to open the session menu and needs its contents.
+    Menu(Sender<MenuSnapshot>),
     Tick,
 }
 
@@ -86,6 +104,23 @@ impl Bridge {
     pub fn send(&self, message: Message) {
         // A closed channel means the registry thread is gone, which only happens on shutdown.
         let _ = self.tx.send(message);
+    }
+
+    /// Everything the session menu needs. Asked of the registry thread rather than of a shared
+    /// copy, so there is exactly one registry and it needs no lock.
+    ///
+    /// An unanswered request is not worth failing over: an empty menu still offers Follow most
+    /// recent, Size and Quit, which is a better answer to a right-click than nothing happening.
+    pub fn snapshot(&self) -> MenuSnapshot {
+        let (tx, rx) = mpsc::channel();
+        self.send(Message::Menu(tx));
+        rx.recv_timeout(ANSWER_WITHIN).unwrap_or_else(|err| {
+            tracing::error!("the registry did not answer the menu: {err}");
+            MenuSnapshot {
+                connections: Vec::new(),
+                selection: Selection::Auto,
+            }
+        })
     }
 
     /// The current pose, for a webview that has just finished loading.
@@ -126,8 +161,19 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
             for message in rx {
                 let now = Instant::now();
                 match message {
-                    Message::Heard { connection, update } => registry.apply(connection, update, now),
+                    Message::Heard { connection, update } => {
+                        registry.apply(connection, update, now)
+                    }
                     Message::Select(selection) => registry.select(selection),
+                    // Answering changes nothing, so it skips the emit below rather than
+                    // recomputing a payload that cannot have moved.
+                    Message::Menu(reply) => {
+                        let _ = reply.send(MenuSnapshot {
+                            connections: registry.menu(now),
+                            selection: registry.selection().clone(),
+                        });
+                        continue;
+                    }
                     Message::Tick => {}
                 }
 
@@ -149,7 +195,9 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
     start_clock(bridge.clone());
     for connection in connections {
         match connection.kind {
-            ConnectionKind::Local => start_local(bridge.clone(), ConnectionId::new(&connection.name)),
+            ConnectionKind::Local => {
+                start_local(bridge.clone(), ConnectionId::new(&connection.name))
+            }
         }
     }
     bridge

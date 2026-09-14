@@ -25,7 +25,10 @@ fn stage_assets() {
     // Rebuild when the source art changes. The directory itself is watched too, so adding or
     // removing a GIF re-runs the staging rather than leaving a stale copy behind.
     println!("cargo:rerun-if-changed={}", src.display());
-    println!("cargo:rerun-if-changed={}", src.join("spine-asset").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        src.join("spine-asset").display()
+    );
     // ⚠️ The *destination* is an input as well, and not watching it is a silent bug. Cargo caches
     // one build-script result per feature set: turning `gif-fallback` back off finds a fresh
     // no-feature fingerprint, skips the script, and embeds the art the previous build left on
@@ -59,7 +62,8 @@ fn stage_atlas(src: &Path, dst: &Path) {
     const PAGE: &str = "leimi.png";
     const RENAMED: &str = "remi.png";
 
-    let atlas = fs::read_to_string(src).unwrap_or_else(|e| panic!("reading {}: {e}", src.display()));
+    let atlas =
+        fs::read_to_string(src).unwrap_or_else(|e| panic!("reading {}: {e}", src.display()));
     if !atlas.lines().any(|line| line.trim() == PAGE) {
         panic!(
             "{}: expected a page-image line `{PAGE}` to rewrite, found none — \
@@ -93,8 +97,7 @@ fn stage_gifs(src: &Path, dst_dir: &Path) {
     }
 
     fs::create_dir_all(dst_dir).unwrap_or_else(|e| panic!("creating {}: {e}", dst_dir.display()));
-    let entries =
-        fs::read_dir(src).unwrap_or_else(|e| panic!("reading {}: {e}", src.display()));
+    let entries = fs::read_dir(src).unwrap_or_else(|e| panic!("reading {}: {e}", src.display()));
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("gif") {

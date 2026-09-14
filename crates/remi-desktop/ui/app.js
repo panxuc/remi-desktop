@@ -83,6 +83,7 @@ async function boot() {
   apply(first, { transition: false });
 
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("contextmenu", onContextMenu);
   // Handy from the webview inspector: `__remi.apply("proud")`.
   window.__remi = { apply, states: STATES, get state() { return state; } };
 }
@@ -94,6 +95,19 @@ function apply(next, opts) {
   }
   state = next;
   renderer?.setState(next, opts);
+}
+
+/// Right-clicking Remi opens the session menu. A webview cannot draw a native menu, so all this
+/// does is forward the gesture — the menu itself is built in Rust, from the registry.
+///
+/// `preventDefault` is what stops the webview's own menu appearing over it. Listening on the
+/// window rather than on #root matters: the renderer's canvas covers the whole page, and while
+/// `pointer-events: none` keeps it out of the way of a drag, nothing should depend on that here.
+function onContextMenu(event) {
+  event.preventDefault();
+  tauri?.core?.invoke("context_menu").catch((err) => {
+    console.error("could not open the session menu:", err);
+  });
 }
 
 /// Digits pick a state directly, arrows step through them, so every pose can be reached without an

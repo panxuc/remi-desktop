@@ -31,9 +31,9 @@
 | 14 | Why the system `ssh` binary | So `ProxyJump`, `IdentityFile`, agent and `known_hosts` apply for free. A Rust SSH client would mean configuring the tool separately | §4.4 |
 | 15 | MQTT's role | **Optional.** A detached publisher alongside the file write, for hosts the laptop can't reach directly | §6, §8 |
 | 16 | Session selection | **One session rendered at a time**, chosen from a right-click menu on Remi and an identical tray menu. Default "follow most recent". A pinned session stays selected after it ends, shown `Offline` | §4.3, §5.2 |
-| 17 | Why the tray duplicates the menu | Click-through makes the window unable to receive a right-click. The tray is the only way back | §5.2 |
+| 17 | Why the tray duplicates the menu | Not the only way back any more — click-through is dropped. It is the way to the menu when the pet is covered or awkwardly placed, in an app with no Dock icon | §5.2 |
 | 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock times `Proud` decay and "last heard". Prevents clock skew distorting either | §4.2 |
-| 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
+| 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s — and a `Proud` the pet finds on attach rather than watches arrive starts already faded, since it is an edge and the pet has no idea how old it is. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
 | 20 | Naming | `remi-desktop`, bundle id `moe.anything.remi`. `touchbar-remi` retired | §11 |
 | 21 | Harness support | Adapters emit a **neutral event vocabulary**; one reducer turns those into poses. No adapter names a pose | §3.5 |
 | 22 | Which harnesses in v1 | **Claude Code and OpenCode.** Codex deferred — pull-only, lossy tool classification, approvals unverified | §3.6, §11 |
@@ -701,8 +701,25 @@ and works out everything it shows from those and `now`, so time passing needs no
   Nothing on the wire announces it.
 - Anything but `ConnectionLost` marks the connection up. A lost connection keeps its sessions.
 
-**Pose**, per session: ended → `Offline`; `Proud` older than 8 s → `Idle`; otherwise the state as
-published.
+**Pose**, per session: ended → `Offline`; `Proud` older than 8 s, **or `Proud` the pet did not
+witness arrive** → `Idle`; otherwise the state as published.
+
+**`Proud` is the one pose that is really an edge**, and the second rule above is what that costs.
+Every other pose is a level that stays true however old it is; `Proud` means *a turn just ended*,
+so its eight seconds are timed from when the record arrived. That only stands in for "when the
+turn ended" if the pet was there to receive it. A session file left at `proud` — Claude finished a
+turn, nobody typed anything since — would otherwise be given a fresh eight seconds every time the
+pet launched, congratulating Claude for work it finished hours ago.
+
+So the registry marks each stored session `witnessed`, and a `Proud` that is not is shown `Idle`
+from the start. Not witnessed means **delivered while attaching**: the connection was not already
+`Up` when the update arrived. That covers a launch's first snapshot and also a reconnect, since
+anything written while a source was away is backlog for the same reason. A record resent unchanged
+keeps whether it was witnessed, alongside the arrival time it already kept — so a drop and
+reconnect cannot retract a `Proud` the pet did see.
+
+This needs no clock comparison and so does not spend the two-clock guarantee (§4.2, decision #18):
+`witnessed` is about whether the pet was listening, not about how old anything is.
 
 **No other pose times out.** Hooks write only on events, so a session blocked on an approval
 prompt, or running a long tool, is silent for as long as that lasts — a timeout would turn
@@ -841,12 +858,13 @@ crates/remi-desktop/
 │  └─ default.json      ✅  REQUIRED — see §5.1; without it the window cannot be dragged
 ├─ icons/icon.png       ✅  placeholder (sips'd from 03pride.gif); real art before M4b
 ├─ src/
-│  ├─ main.rs           ✅  wiring only — currently just Builder::default().run()
-│  ├─ window.rs             transparent/on-top/click-through, position persistence
-│  ├─ menu.rs               the session menu, built from Registry::menu — shared by
-│  │                          the window's right-click and the tray
+│  ├─ main.rs           ✅  wiring only: managed state, the three commands, the menu handler
+│  ├─ config.rs         ✅  config.toml load/save, debounced by a writer thread
+│  ├─ window.rs         ✅  size and position persistence (the rest is tauri.conf.json)
+│  ├─ menu.rs           ✅  the session menu, built from Registry::menu — shared by
+│  │                          the window's right-click and, later, the tray
 │  ├─ tray.rs               icon + the same menu + quit
-│  └─ bridge.rs             Registry -> webview events
+│  └─ bridge.rs         ✅  Registry -> webview events, and the menu's snapshot
 └─ ui/                  ✅  frontendDist; plain static files, no build step
    ├─ index.html        ✅  #root[data-tauri-drag-region]; the renderer appends its own element
    ├─ app.js            ✅  picks a renderer, mounts it, feeds it states; M2 debug keys
@@ -901,34 +919,63 @@ full-bleed, so without it the root element never sees the mousedown.
 Right-clicking Remi opens a context menu — the user's model is VS Code's remote picker:
 
 ```
-● plume · Creating bin from crate libs    thinking      2s
-  plume · dotfiles                        idle          4m
-  local · 3f9a1c2e                        waiting       just now
+  ✓ plume · Creating bin from crate libs — thinking, 2s
+    plume · dotfiles — idle, 4m
+    local · 3f9a1c2e — waiting, just now
+    theresa — disconnected: ssh exited with status 255
   ─────────────────────────────────────────────
-  ✓ Follow most recent            (Selection::Auto)
+    Follow most recent                          (Selection::Auto)
   ─────────────────────────────────────────────
-  Add host…
-  Size                     ▸  small · medium · large
-  Settings…
-  Quit
+    Add host…                                   (not built yet)
+    Size                     ▸  Small · Medium · Large
+    Settings…                                   (not built yet)
+    Quit Remi
 ```
 
 Each session is labelled `<connection> · <name>`, where the name is the first of these the
-record has: `title`, then `cwd`, then the raw `session` id. The three rows above show one of
-each. The record carries all three as-is and **the pet** picks, so changing the display rule
-never requires upgrading `remi-hook` on the remotes.
+record has: `title`, then `cwd`, then the raw `session` id. The three session rows above show
+one of each. The record carries all three as-is and **the pet** picks, so changing the display
+rule never requires upgrading `remi-hook` on the remotes. Names are cut at 44 characters:
+`title` allows 80, and a menu that wide covers a good part of the screen.
 
-Built from `Registry::menu()`, rebuilt on every change, grouped by connection and then
-harness. Every row shows its pose and how long ago its session was last heard from, so one that
-died without ending is recognisable. A session that ended reads `offline` for 10 s and then
-leaves the menu — unless it is pinned, in which case it stays until another session or Auto is
-chosen (§4.3).
+Built fresh from `Registry::menu()` on every popup, not kept and mutated — a native menu cannot
+change while it is open, and every session row is time-dependent. Each row shows its pose and how
+long ago its session was last heard from, so one that died without ending is recognisable. A
+session that ended reads `offline` for 10 s and then leaves the menu — unless it is pinned, in
+which case it stays until another session or Auto is chosen (§4.3).
 
-**The tray carries the identical menu.** Not for redundancy: when click-through is on, the
-window cannot receive the right-click at all, and the tray is the only way back. For the same
-reason click-through is never enabled automatically.
+**Sessions are listed flat**, though `Registry::menu` groups them by connection and then harness:
+the list is short and one level reads faster than three. The harness is named in a row only where
+a connection is running more than one, which is the only case where it tells two rows apart
+(§3.6's first obligation is about identity, not about always printing it). A connection with no
+sessions, or one whose source has dropped, gets a disabled row of its own, so a host that is idle
+or down stays visible rather than silently vanishing.
 
-Selection persists to config as either `auto` or a pinned `(connection, harness, session)`.
+The selected session is ticked, and clicking a row pins it; **Follow most recent** is ticked
+instead under `Selection::Auto`, and is how the user gets back to it. Selection persists to config
+as either `auto` or a pinned `(connection, harness, session)`. Size applies immediately — the
+renderer refits itself to whatever the window is — and persists the same way; a hand-written pixel
+count in the config ticks none of the three, which is the truth.
+
+Two mechanics that are not obvious and not discoverable from the failure:
+
+⚠️ **A webview cannot draw a native menu**, so the gesture is JavaScript's and the menu is Rust's:
+`ui/app.js` catches `contextmenu`, calls `preventDefault` (which is what suppresses the webview's
+own menu) and invokes the `context_menu` command. Tauri's drag script only acts on button 0, so a
+right-click never starts a drag.
+
+⚠️ **`context_menu` must be `#[tauri::command(async)]`.** Creating a menu marshals to the main
+thread and blocks until it answers, and on macOS the popup then runs a nested event loop there
+until the menu is dismissed — so on the main thread it deadlocks rather than failing. `(async)`
+puts it on a worker thread. The same constraint is why it takes `AppHandle` by value instead of
+`tauri::State`: an off-thread command cannot borrow from the request.
+
+**The tray will carry the identical menu.** Its original justification — that a click-through
+window cannot receive a right-click — died with click-through (§5.1). What is left is smaller but
+real: the app has no Dock icon (`LSUIElement`), so if the pet is dragged somewhere awkward or a
+full-screen app covers it, the tray is the only way to reach the menu or quit. That makes it a
+convenience rather than the only way back, which is why it comes after the context menu rather
+than with it.
 
 **Add host…** opens the install dialog (§6.1): pick a target and a harness, and the pet runs
 the installer for you. Removing a connection from Settings offers to run `remi-hook uninstall`
@@ -1345,12 +1392,20 @@ something end-to-end works before any infrastructure exists.
 | **M7** | Autostart on login, both platforms | Reboot, pet is there |
 | **M8** | OpenCode adapter (plugin, SSE fallback) | Run OpenCode and Claude Code on the same box; menu lists both, labelled by harness; each drives the right pose |
 
-**Where we are — 2026-09-14.** **M0 and M1 are met; M2 is met apart from the battery number.**
+**Where we are — 2026-09-14.** **M0 and M1 are met; M2 is met apart from the battery number;
+M3 is most of the way there.**
 `remi-core` has `state`,
 `record`, `store`, `signal` (the reducer), `harness` (Claude Code stdin parsing), `registry`,
 and `source::local` (`StateDirWatch`), all with unit tests. `remi-hook` implements `signal`,
 `state`, `snapshot` and `watch`, and `signal` has run live under real Claude Code hooks on the
 Linux dev box. Session titles are not read yet.
+
+**M3 has everything but the tray, 2026-09-14.** The pet follows local Claude Code sessions
+end to end: `source::local` feeds a registry thread, which emits `pet://state`, and the window
+remembers its size and position. Right-clicking Remi now opens the session menu (§5.2) — pick a
+session, follow the most recent one, change size, quit — and both choices persist to
+`config.toml`. What M3 still owes: `tray.rs`, and the exit criterion itself, which is a live run
+against real Claude Code with an approval prompt approved and the waiting pose seen to clear.
 
 **M1 passed on the M2 MacBook, 2026-09-14** — observed, not reasoned about. `remi-desktop`
 is a real Tauri 2.11.5 shell (`tauri-build` 2.6.3, no `cmake`, no node, no `cargo-tauri`
@@ -1406,7 +1461,8 @@ the first milestone that needs a public `install.sh` to exist. Everything before
 
 ## 10. Testing
 
-- `remi-core`: real unit tests. `registry.rs` table-driven (`Proud` decay, no timeout on any other pose, auto-resolution,
+- `remi-core`: real unit tests. `registry.rs` table-driven (`Proud` decay, a `Proud` found on
+  attach or during an outage starting already faded while a resent one does not, no timeout on any other pose, auto-resolution,
   ended sessions shown `Offline` and then dropped, a pinned session staying after it ends, two connections reporting the same host, **one host running
   two harnesses**). `record.rs` round-trip + forward-compat (unknown field, unknown `v`).
   `signal.rs` table-driven over (sequence of `Signal`s) → expected poses — in particular that
