@@ -1,4 +1,4 @@
-use remi_core::{record, store};
+use remi_core::{record, source, store};
 
 /// Everything that can make a `remi-hook` command fail.
 ///
@@ -15,6 +15,8 @@ pub enum Error {
     Store(#[from] store::Error),
     #[error(transparent)]
     Record(#[from] record::Error),
+    #[error(transparent)]
+    Watch(#[from] source::local::Error),
     #[error("writing to stdout: {0}")]
     Stdout(#[source] std::io::Error),
 }

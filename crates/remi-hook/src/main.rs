@@ -4,12 +4,14 @@ mod logging;
 use std::io::{self, IsTerminal, Write};
 use std::panic;
 use std::process::ExitCode;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use remi_core::harness::{self, HookInput};
 use remi_core::record::{HarnessId, SessionId, SessionRecord};
 use remi_core::signal::{SessionContext, Signal};
+use remi_core::source::local::StateDirWatch;
 use remi_core::state::PetState;
 use remi_core::store::{self, Store, Update};
 
@@ -29,7 +31,8 @@ enum Command {
     /// Set a session's pose directly, bypassing the event rules. For testing the pet without
     /// running an agent.
     State(StateArgs),
-    /// Stream live records as NDJSON: a snapshot, then deltas. Run by the pet over ssh.
+    /// Print every live session as one JSON array, then again each time any of them changes.
+    /// Run by the pet over ssh; stops when stdin closes.
     Watch,
     /// Print live records as one JSON array, then exit.
     Snapshot,
@@ -259,7 +262,7 @@ fn run(command: Command, env: &Env) -> Result<(), Error> {
     match command {
         Command::Signal(args) => signal(args, env),
         Command::State(args) => state(args, env),
-        Command::Watch => watch(),
+        Command::Watch => watch(env),
         Command::Snapshot => snapshot(env),
         Command::Check => check(),
         Command::Setup(args) => setup(args),
@@ -324,16 +327,29 @@ fn state(args: StateArgs, env: &Env) -> Result<(), Error> {
     Ok(())
 }
 
-fn watch() -> Result<(), Error> {
-    Err(Error::NotImplemented("watch"))
+fn watch(env: &Env) -> Result<(), Error> {
+    let (mut dir_watch, mut listing) = StateDirWatch::start(env.store.clone())?;
+
+    // Whoever runs `watch` holds its stdin open for as long as it wants output — for the pet,
+    // that is the ssh connection — so stdin closing is the signal to stop.
+    thread::spawn(|| {
+        let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
+        std::process::exit(0);
+    });
+
+    loop {
+        match print_records(&listing) {
+            Ok(()) => {}
+            // Nobody is reading any more, which is often how a dropped connection shows first.
+            Err(Error::Stdout(err)) if err.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(err) => return Err(err),
+        }
+        listing = dir_watch.next_snapshot()?;
+    }
 }
 
 fn snapshot(env: &Env) -> Result<(), Error> {
-    let mut records = env.store.list()?;
-    records.sort_by(|a, b| (&a.harness, &a.session).cmp(&(&b.harness, &b.session)));
-
-    let json = serde_json::to_string(&records).expect("session records always serialize");
-    writeln!(io::stdout().lock(), "{json}").map_err(Error::Stdout)
+    print_records(&env.store.list()?)
 }
 
 fn check() -> Result<(), Error> {
@@ -346,6 +362,16 @@ fn setup(_args: SetupArgs) -> Result<(), Error> {
 
 fn uninstall(_purge: bool) -> Result<(), Error> {
     Err(Error::NotImplemented("uninstall"))
+}
+
+/// Writes `records` to stdout as one JSON array on a line of its own, flushed straight away so
+/// a reader at the other end of a pipe sees it immediately.
+fn print_records(records: &[SessionRecord]) -> Result<(), Error> {
+    let json = serde_json::to_string(records).expect("session records always serialize");
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{json}")
+        .and_then(|()| stdout.flush())
+        .map_err(Error::Stdout)
 }
 
 /// The session's current record, if it has a readable one. An unreadable file is treated as
