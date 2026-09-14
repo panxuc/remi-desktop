@@ -32,7 +32,7 @@
 | 14 | Why the system `ssh` binary | So `ProxyJump`, `IdentityFile`, agent and `known_hosts` apply for free. A Rust SSH client would mean configuring the tool separately | §4.4 |
 | 15 | MQTT's role | **Optional.** A detached publisher alongside the file write, for hosts the laptop can't reach directly | §6, §8 |
 | 16 | Session selection | **One session rendered at a time**, chosen from a right-click menu on Remi and an identical tray menu. Default "follow most recent". A pinned session stays selected after it ends, shown `Offline` | §4.3, §5.2 |
-| 16b | Menu shape | This machine's sessions **flat and first**; every other machine a **submenu** carrying its sessions and its Connect/Disconnect. A host is something to act on, not just a heading — and its own row carries the counts, so a waiting session is visible without opening it | §5.2 |
+| 16b | Menu shape | This machine's sessions **flat and first**; every **watched** machine a **submenu** carrying its sessions and its Disconnect; every host nobody is watching one level further in, under **Connect to a host…**. A host is something to act on, not just a heading — and a watched one's row carries the counts, so a waiting session is visible without opening it | §5.2 |
 | 17 | Why the tray duplicates the menu | Not the only way back any more — click-through is dropped. It is the way to the menu when the pet is covered or awkwardly placed, in an app with no Dock icon | §5.2 |
 | 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock times `Proud` decay and "last heard". Prevents clock skew distorting either | §4.2 |
 | 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s — and a `Proud` the pet finds on attach rather than watches arrive starts already faded, since it is an edge and the pet has no idea how old it is. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
@@ -970,9 +970,10 @@ Right-clicking Remi opens a context menu — the user's model is VS Code's remot
     local · 3f9a1c2e — waiting, just now
   ─────────────────────────────────────────────
     theresa — 2 sessions, 1 waiting           ▸   ✓ dotfiles — waiting, just now
-    plume                                     ▸       remi-desktop — writing, 3s
-    whisperain — connecting…                  ▸       ────────────────
-    lappland — disconnected: Permission den…  ▸       Disconnect
+    whisperain — connecting…                  ▸       remi-desktop — writing, 3s
+    lappland — disconnected: Permission den…  ▸       ────────────────
+    Connect to a host…                        ▸       Disconnect
+        └─ plume · bastion · lab-7                    (every host nobody is watching)
   ─────────────────────────────────────────────
     Follow most recent                          (Selection::Auto)
   ─────────────────────────────────────────────
@@ -1000,12 +1001,23 @@ from. The harness is named in a row only where a connection is running more than
 only case where it tells two rows apart (§3.6's first obligation is about identity, not about
 always printing it).
 
-**Every other machine is a submenu**, listing its sessions and then what can be done about the
-connection — Connect, Cancel while connecting, or Disconnect. A host is something to act on and
-not merely a heading, which is what earns the extra level; nesting is also what stops a
-`~/.ssh/config` with nine hosts in it burying the sessions. Each is built from the same
+**Every *watched* machine is a submenu**, listing its sessions and then what can be done about
+the connection — Cancel while connecting, or Disconnect. A host is something to act on and not
+merely a heading, which is what earns the extra level. Each is built from the same
 `Registry::menu` snapshot, so a machine with no sessions, one still connecting, and one whose
 source has dropped each stay visible with a reason rather than silently vanishing.
+
+**Machines nobody is watching are one level further in**, under a single **Connect to a host…**
+row (decided 2026-09-14, replacing a top level that listed every host in `~/.ssh/config`). The top
+level is for what is *happening*, and a host nobody is connected to is not that; nine offered hosts
+sitting above two real ones buries the sessions the menu exists for. Picking one connects to it and
+it moves up to a row of its own, saying `connecting…` and then carrying its sessions — the same
+transition Disconnect runs backwards. Where a machine is listed is read straight off its status:
+`Disconnected` is exactly "nobody is watching it", and `Connecting` and `Lost` stay up top because
+the user asked for them and what they are doing is news. The row is kept even when there is nothing
+under it — where hosts come from is otherwise invisible, since an unread `~/.ssh/config` and an
+empty one look identical from a menu that just omits the row — and then holds one disabled line
+saying so.
 
 ⚠️ **What nesting costs is the glance that says which machine wants attention**, so the host's own
 row pays it back: `theresa — 2 sessions, 1 waiting`. Those are counts, not a merged state — the

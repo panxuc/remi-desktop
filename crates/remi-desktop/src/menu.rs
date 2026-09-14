@@ -16,8 +16,8 @@ use remi_core::registry::{ConnectionMenu, ConnectionStatus, Selection, SessionEn
 use remi_core::source::ConnectionId;
 use remi_core::state::PetState;
 use tauri::menu::{
-    CheckMenuItem, CheckMenuItemBuilder, ContextMenu, Menu, MenuBuilder, MenuItemBuilder, Submenu,
-    SubmenuBuilder,
+    CheckMenuItem, CheckMenuItemBuilder, ContextMenu, Menu, MenuBuilder, MenuItem, MenuItemBuilder,
+    Submenu, SubmenuBuilder,
 };
 use tauri::{AppHandle, Manager, Wry};
 
@@ -81,18 +81,22 @@ pub fn popup(app: &AppHandle) {
     }
 }
 
-/// The menu as the user sees it: this machine's sessions, then every other machine as a row that
-/// opens, then how to follow the newest session, then the pet's own settings.
+/// The menu as the user sees it: this machine's sessions, then every machine the pet is watching
+/// as a row that opens, then the hosts it is not, then how to follow the newest session, then the
+/// pet's own settings.
 ///
 /// **This machine's sessions are flat and first.** It is always connected, needs no configuring,
 /// and is where most sessions are — and one level reads faster than two for the rows the user
 /// actually picks from.
 ///
-/// **Every other machine is a submenu**, because a host is something to act on — connect,
-/// disconnect — and not merely a heading. Nesting them is also what stops a `~/.ssh/config` with
-/// nine hosts in it burying the sessions. What nesting costs is the glance that says which machine
-/// wants attention, so the host's own row pays it back: it carries how many sessions are on it and
-/// how many of those are waiting.
+/// **Every watched machine is a submenu**, because a host is something to act on — disconnect,
+/// cancel a connection — and not merely a heading. What nesting costs is the glance that says
+/// which machine wants attention, so the host's own row pays it back: it carries how many sessions
+/// are on it and how many of those are waiting.
+///
+/// **Everything the pet is *not* watching is one level further in**, under Connect to a host…,
+/// because the top level is for what is happening and a host nobody is connected to is not that.
+/// It is also what stops a `~/.ssh/config` with nine hosts in it burying the sessions.
 fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let MenuSnapshot {
         connections,
@@ -127,13 +131,19 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         }
     }
 
-    let hosts: Vec<&ConnectionMenu> = connections.iter().filter(|it| !is_local(it)).collect();
-    if !hosts.is_empty() {
-        menu = menu.separator();
-    }
-    for host in hosts {
+    // Watched machines get a row each; the rest are one level further in, under Connect to a
+    // host…, because a `~/.ssh/config` with nine hosts in it is a list of possibilities and not a
+    // list of anything happening.
+    let (watched, offered): (Vec<&ConnectionMenu>, Vec<&ConnectionMenu>) = connections
+        .iter()
+        .filter(|it| !is_local(it))
+        .partition(|it| is_watched(it));
+
+    menu = menu.separator();
+    for host in watched {
         menu = menu.item(&machine(app, host, &selection)?);
     }
+    menu = menu.item(&hosts(app, &offered)?);
 
     let follow = CheckMenuItemBuilder::with_id(FOLLOW, "Follow most recent")
         .checked(selection == Selection::Auto)
@@ -161,6 +171,47 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .build()
 }
 
+/// Whether the pet is listening to this machine — which is what decides where it is listed, since
+/// a connection is [`ConnectionStatus::Disconnected`] exactly when nobody is watching it. A host
+/// that is still connecting, or one whose source dropped and is retrying, counts: the user asked
+/// for it, and what it is doing is news.
+fn is_watched(connection: &ConnectionMenu) -> bool {
+    !matches!(connection.status, ConnectionStatus::Disconnected)
+}
+
+/// Every machine the pet is not watching: the list to pick from when starting one, kept out of the
+/// way of the machines that are actually reporting. Picking one connects to it, and it moves up to
+/// a row of its own — first saying `connecting…`, then carrying its sessions.
+///
+/// The row is here even when there is nothing under it, because where the hosts come from is
+/// otherwise invisible: a `~/.ssh/config` with nothing in it and one the pet never read look
+/// identical from a menu that simply omits the row.
+fn hosts(app: &AppHandle, offered: &[&ConnectionMenu]) -> tauri::Result<Submenu<Wry>> {
+    let mut submenu = SubmenuBuilder::new(app, "Connect to a host…");
+    if offered.is_empty() {
+        let text = "No other hosts in ~/.ssh/config";
+        return submenu
+            .item(&MenuItemBuilder::new(text).enabled(false).build(app)?)
+            .build();
+    }
+    for host in offered {
+        // Nothing to say about it but its name: a machine nobody is watching has no sessions and
+        // no state worth a word — that is what being in this list means.
+        submenu = submenu.item(&connect_item(
+            app,
+            &host.connection,
+            host.connection.as_str(),
+        )?);
+    }
+    submenu.build()
+}
+
+/// The item that starts watching a machine. Its text differs by where it is: a name in the list of
+/// hosts, the verb inside a machine's own submenu.
+fn connect_item(app: &AppHandle, id: &ConnectionId, text: &str) -> tauri::Result<MenuItem<Wry>> {
+    MenuItemBuilder::with_id(format!("{CONNECT}{id}"), text).build(app)
+}
+
 /// One machine's row: what it is doing, and what can be done about it.
 ///
 /// Its sessions come first, because they are what the user opened the submenu for; the state of
@@ -186,9 +237,10 @@ fn machine(
     }
 
     submenu = match &connection.status {
-        ConnectionStatus::Disconnected => {
-            submenu.item(&MenuItemBuilder::with_id(format!("{CONNECT}{id}"), "Connect").build(app)?)
-        }
+        // A disconnected machine has no row of its own — it is offered under Connect to a host…
+        // instead — so this is only reached in the moment between the user picking it there and
+        // its source saying it has started.
+        ConnectionStatus::Disconnected => submenu.item(&connect_item(app, id, "Connect")?),
         ConnectionStatus::Connecting => submenu
             .item(
                 &MenuItemBuilder::new("Connecting…")
@@ -512,6 +564,42 @@ mod tests {
             panic!("{id} did not parse back to a session");
         };
         assert_eq!(parsed, original);
+    }
+
+    fn host(name: &str, status: ConnectionStatus) -> ConnectionMenu {
+        ConnectionMenu {
+            connection: ConnectionId::new(name),
+            status,
+            harnesses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_machine_is_offered_to_connect_to_exactly_while_nobody_is_watching_it() {
+        let hosts = [
+            host("plume", ConnectionStatus::Up),
+            host("theresa", ConnectionStatus::Connecting),
+            host(
+                "lappland",
+                ConnectionStatus::Lost {
+                    reason: "Permission denied (publickey)".into(),
+                },
+            ),
+            host("whisperain", ConnectionStatus::Disconnected),
+        ];
+        let (watched, offered): (Vec<&ConnectionMenu>, Vec<&ConnectionMenu>) =
+            hosts.iter().partition(|it| is_watched(it));
+
+        // A host still connecting, and one whose source dropped and is retrying, are both the
+        // user's doing and both have news — so they stay where the sessions are.
+        let named = |hosts: Vec<&ConnectionMenu>| {
+            hosts
+                .iter()
+                .map(|it| it.connection.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(named(watched), ["plume", "theresa", "lappland"]);
+        assert_eq!(named(offered), ["whisperain"]);
     }
 
     #[test]

@@ -167,10 +167,11 @@ the identical menu on the tray), the way VS Code's remote picker works. Sessions
 
 **Which sources are connected is the user's call, one machine at a time** (decided 2026-09-14).
 This machine is always watched. Every host in `~/.ssh/config` is offered in the menu from the
-first launch, and none is connected to until the user presses Connect on it — so the pet never
-spends its first seconds failing to reach machines nobody asked about, and never holds an ssh
-connection open to a host the user does not care about today. Connecting remembers the host, so
-it comes back on the next launch. Plan §4.4 and §5.2.
+first launch — under `Connect to a host…`, one level in, so the machines actually reporting keep
+the top level to themselves — and none is connected to until the user picks it there, so the pet
+never spends its first seconds failing to reach machines nobody asked about, and never holds an ssh
+connection open to a host the user does not care about today. Connecting moves the host up among
+the watched ones and remembers it, so it comes back on the next launch. Plan §4.4 and §5.2.
 
 Still explicitly NOT aggregating — because only one session is ever rendered, no priority
 merge rule exists anywhere in the system. Selection is the user's, not the app's.
