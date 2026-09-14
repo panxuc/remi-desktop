@@ -112,6 +112,16 @@ pub struct Registry {
 impl Registry {
     /// Takes in an update from `connection`, heard at `now`.
     pub fn apply(&mut self, connection: ConnectionId, update: SessionUpdate, now: Instant) {
+        // Whether this update is the pet *attaching* to the connection rather than hearing news
+        // from one it was already listening to. Everything a source delivers on attach is
+        // backlog: it was written before anyone was watching, however long before. See
+        // [`StoredSession::witnessed`]. A connection that dropped and came back counts as
+        // attaching again, because anything written during the outage is backlog too.
+        let attaching = !matches!(
+            self.connections.get(&connection),
+            Some(ConnectionStatus::Up)
+        );
+
         let status = match &update {
             SessionUpdate::ConnectionLost { reason } => ConnectionStatus::Lost {
                 reason: reason.clone(),
@@ -128,7 +138,7 @@ impl Registry {
                 // Ties are taken: `ts` is in whole seconds, so consecutive events often share
                 // one, and the later arrival is the later event.
                 if previous.is_none_or(|stored| record.ts >= stored.record.ts) {
-                    let stored = StoredSession::new(record, previous, now);
+                    let stored = StoredSession::new(record, previous, now, attaching);
                     self.sessions.insert(key, stored);
                 }
             }
@@ -151,7 +161,7 @@ impl Registry {
                 self.sessions = others;
                 for record in records {
                     let key = SessionKey::of(&connection, &record);
-                    let stored = StoredSession::new(record, before.get(&key), now);
+                    let stored = StoredSession::new(record, before.get(&key), now, attaching);
                     self.sessions.insert(key, stored);
                 }
                 for (key, mut stored) in before {
@@ -243,6 +253,16 @@ struct StoredSession {
     record: SessionRecord,
     /// When this record arrived, on the pet's own clock rather than the writer's.
     received: Instant,
+    /// Whether the pet watched this record arrive, as opposed to finding it already written when
+    /// it attached to the connection.
+    ///
+    /// It exists for `Proud`, which is the one pose that is really an *edge* — "a turn just
+    /// ended" — dressed as a level. Every other pose is a genuine level that stays true however
+    /// old it is, which is why nothing else times out (§4.3). `Proud`'s eight seconds are timed
+    /// from `received`, and that only stands in for "when the turn ended" if the pet was there to
+    /// receive it: a session file left at `proud` hours ago would otherwise be given a fresh
+    /// eight seconds at every launch.
+    witnessed: bool,
     /// When the pet learned the session had ended. `None` while it is live.
     ended: Option<Instant>,
 }
@@ -250,14 +270,19 @@ struct StoredSession {
 impl StoredSession {
     /// `record`, heard at `now`, replacing `previous`. A session heard from is live again, even
     /// if it had ended. An identical record — what a source re-attaching resends — keeps the
-    /// original arrival time, since any real write changes at least `ts`.
-    fn new(record: SessionRecord, previous: Option<&StoredSession>, now: Instant) -> Self {
-        let received = previous
-            .filter(|stored| stored.record == record)
-            .map_or(now, |stored| stored.received);
+    /// original arrival time and whether it was witnessed, since any real write changes at least
+    /// `ts`.
+    fn new(
+        record: SessionRecord,
+        previous: Option<&StoredSession>,
+        now: Instant,
+        attaching: bool,
+    ) -> Self {
+        let resent = previous.filter(|stored| stored.record == record);
         Self {
+            received: resent.map_or(now, |stored| stored.received),
+            witnessed: resent.map_or(!attaching, |stored| stored.witnessed),
             record,
-            received,
             ended: None,
         }
     }
@@ -278,7 +303,9 @@ impl StoredSession {
         let last_heard = now.saturating_duration_since(self.received);
         let pose = match self.record.state {
             _ if self.ended.is_some() => PetState::Offline,
-            PetState::Proud if last_heard >= PROUD_FADES_AFTER => PetState::Idle,
+            // A turn that ended before the pet was looking is simply over: showing `Proud` would
+            // be congratulating Claude for work it finished hours ago.
+            PetState::Proud if !self.witnessed || last_heard >= PROUD_FADES_AFTER => PetState::Idle,
             state => state,
         };
         let label = self
@@ -338,6 +365,26 @@ mod tests {
         registry.apply(
             ConnectionId::new(connection),
             SessionUpdate::Snapshot(records),
+            now,
+        );
+    }
+
+    /// The pet attaching to a connection. Tests that care whether a record was *witnessed* start
+    /// with this, because a fresh registry hearing its first update is attaching, not listening.
+    fn connect(registry: &mut Registry, connection: &str, now: Instant) {
+        registry.apply(
+            ConnectionId::new(connection),
+            SessionUpdate::ConnectionUp,
+            now,
+        );
+    }
+
+    fn lose(registry: &mut Registry, connection: &str, now: Instant) {
+        registry.apply(
+            ConnectionId::new(connection),
+            SessionUpdate::ConnectionLost {
+                reason: "connection reset".into(),
+            },
             now,
         );
     }
@@ -402,6 +449,7 @@ mod tests {
     fn proud_fades_to_idle() {
         let mut registry = Registry::default();
         let t0 = Instant::now();
+        connect(&mut registry, "local", t0);
         upsert(
             &mut registry,
             "local",
@@ -411,6 +459,88 @@ mod tests {
 
         let just_before = t0 + PROUD_FADES_AFTER - Duration::from_millis(1);
         assert_eq!(shown(&registry, just_before).unwrap().1, Proud);
+        assert_eq!(shown(&registry, t0 + PROUD_FADES_AFTER).unwrap().1, Idle);
+    }
+
+    #[test]
+    fn a_proud_found_on_attach_is_idle_from_the_start() {
+        // The session file a pet finds on launch was written before anyone was watching: a turn
+        // that ended some unknown time ago, possibly hours. Timing its eight seconds from when
+        // the pet read the file would congratulate Claude afresh at every launch.
+        let mut registry = Registry::default();
+        let t0 = Instant::now();
+        snapshot(
+            &mut registry,
+            "local",
+            vec![record("claude-code", "s1", Proud, 100)],
+            t0,
+        );
+
+        assert_eq!(shown(&registry, t0).unwrap().1, Idle);
+    }
+
+    #[test]
+    fn only_proud_cares_whether_the_pet_was_watching() {
+        // Every other pose is a level that stays true however old it is, so finding one on attach
+        // changes nothing about it.
+        let t0 = Instant::now();
+        for state in [Thinking, Viewing, Writing, Replying, WaitingForInput] {
+            let mut registry = Registry::default();
+            snapshot(
+                &mut registry,
+                "local",
+                vec![record("claude-code", "s1", state, 100)],
+                t0,
+            );
+            assert_eq!(shown(&registry, t0).unwrap().1, state);
+        }
+    }
+
+    #[test]
+    fn a_proud_first_heard_of_during_an_outage_is_idle_too() {
+        // Reconnecting is attaching again: whatever was written while the source was away is
+        // backlog for exactly the same reason a launch's first snapshot is.
+        let mut registry = Registry::default();
+        let t0 = Instant::now();
+        connect(&mut registry, "plume", t0);
+        lose(&mut registry, "plume", t0 + Duration::from_secs(1));
+        snapshot(
+            &mut registry,
+            "plume",
+            vec![record("claude-code", "s1", Proud, 100)],
+            t0 + Duration::from_secs(2),
+        );
+
+        assert_eq!(
+            shown(&registry, t0 + Duration::from_secs(2)).unwrap().1,
+            Idle
+        );
+    }
+
+    #[test]
+    fn a_reconnect_resending_a_witnessed_proud_does_not_un_witness_it() {
+        // A turn that ended while the pet *was* watching keeps its eight seconds even if the
+        // connection drops and the source resends the same record — the same rule that keeps a
+        // resent record's arrival time.
+        let mut registry = Registry::default();
+        let t0 = Instant::now();
+        connect(&mut registry, "plume", t0);
+        let ended_turn = record("claude-code", "s1", Proud, 100);
+        upsert(&mut registry, "plume", ended_turn.clone(), t0);
+
+        lose(&mut registry, "plume", t0 + Duration::from_secs(1));
+        snapshot(
+            &mut registry,
+            "plume",
+            vec![ended_turn],
+            t0 + Duration::from_secs(2),
+        );
+
+        assert_eq!(
+            shown(&registry, t0 + Duration::from_secs(3)).unwrap().1,
+            Proud
+        );
+        // Still timed from when it was first heard, not from the resend.
         assert_eq!(shown(&registry, t0 + PROUD_FADES_AFTER).unwrap().1, Idle);
     }
 
