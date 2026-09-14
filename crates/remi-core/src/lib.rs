@@ -7,6 +7,8 @@
 
 pub mod harness;
 pub mod record;
+pub mod registry;
 pub mod signal;
+pub mod source;
 pub mod state;
 pub mod store;
