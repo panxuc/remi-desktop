@@ -26,11 +26,11 @@
 | 9 | Not `/tmp` or `$XDG_RUNTIME_DIR` | `/run/user/<uid>` is destroyed when the last login session ends — exactly our detached-zellij case. `/tmp` is tmpfs on some distros and disk on others | §3.2 |
 | 10 | Disk wear | Non-issue: ~0.2 GB/day against a 150–600 TBW rating. Writes are coalesced anyway (skip if same state and `ts` < 20 s old) | §3.3 |
 | 11 | Write path | **One, always the same.** A hook writes the file and exits. No transport is ever in Claude's critical path | §3, §6 |
-| 12 | Read paths | Three, behind `SessionSource`: `local` · `ssh` · `mqtt`. All configured ones run concurrently | §4.4 |
-| 13 | The `ssh` transport | Long-lived `ssh -T <host> remi-hook watch` streaming NDJSON. **Not polling.** No `ControlMaster`, no edits to the user's `~/.ssh/config` | §4.4 |
+| 12 | Read paths | Three, one per transport: `local` · `ssh` · `mqtt`. All configured ones run concurrently, feeding one registry | §4.4 |
+| 13 | The `ssh` transport | Long-lived `ssh -T <host> remi-hook watch`, printing the state dir's whole listing as a JSON array on every change. **Not polling.** No `ControlMaster`, no edits to the user's `~/.ssh/config` | §4.4 |
 | 14 | Why the system `ssh` binary | So `ProxyJump`, `IdentityFile`, agent and `known_hosts` apply for free. A Rust SSH client would mean configuring the tool separately | §4.4 |
 | 15 | MQTT's role | **Optional.** A detached publisher alongside the file write, for hosts the laptop can't reach directly | §6, §8 |
-| 16 | Session selection | **One session rendered at a time**, chosen from a right-click menu on Remi and an identical tray menu. Default "follow most recent" | §5.2 |
+| 16 | Session selection | **One session rendered at a time**, chosen from a right-click menu on Remi and an identical tray menu. Default "follow most recent". A pinned session stays selected after it ends, shown `Offline` | §4.3, §5.2 |
 | 17 | Why the tray duplicates the menu | Click-through makes the window unable to receive a right-click. The tray is the only way back | §5.2 |
 | 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock times `Proud` decay and "last heard". Prevents clock skew distorting either | §4.2 |
 | 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
@@ -41,6 +41,7 @@
 | 24 | Session identity | `(connection, harness, session)`. One box can run two harnesses at once, and the state dir, `watch` output and MQTT topic all name the harness | §3.2, §4.2, §4.3 |
 | 25 | Installing on a target | **One `install.sh`**, published with the release. All configuration is `remi-hook setup`, run *on* the target. The pet pipes the script over ssh stdin; the `mqtt` case the user runs by hand | §6.1 |
 | 26 | Distribution | **Public repo, GitHub Actions on a `v*` tag** — `remi-hook` for five targets, `install.sh` + checksums, and both GUI bundles. Unsigned for now | §7 |
+| 27 | Ended sessions | Detected by absence from the connection's next snapshot — no message announces them. Shown `Offline` for 10 s, then dropped; a pinned one stays until the user selects something else | §4.3 |
 
 ---
 
@@ -66,7 +67,7 @@ attaches late sees the truth, and a **notifier** so it isn't polling:
 |---|---|---|---|
 | Register | the file, this machine | the file, on the remote | retained message on the broker |
 | Notifier | `notify` (FSEvents / inotify / `ReadDirectoryChangesW`) | `remi-hook watch` on the remote, over ssh stdio | MQTT subscription |
-| Pet does | watch the directory | one long-lived `ssh -T <host> remi-hook watch`, read NDJSON | subscribe `remi/+/+/+/state` |
+| Pet does | watch the directory | one long-lived `ssh -T <host> remi-hook watch`, read one JSON array per line | subscribe `remi/+/+/+/state` |
 | Extra writer work | none | none | detached child publishes `retain=true` |
 | User must set up | nothing | nothing beyond already being able to `ssh <host>` | a broker |
 | Use it when | Claude is on this laptop | Claude is on a box you can reach | the laptop **can't** reach the box directly, or you want many hosts without many ssh connections |
@@ -128,10 +129,9 @@ drifting onto *incompatible* requirements. So:
 The test for rule 3 is whether a third-party type or trait crosses the crate boundary.
 `serde` does — `#[derive(Serialize)]` on `SessionRecord` implements *remi-core's* `Serialize`,
 and a member on an incompatible serde sees the type as simply not serializable. `thiserror`
-does not — `#[derive(Error)]` implements `std::error::Error`, which is in std. `tokio` does,
-via the `Sender` in `SessionSource::run` (§4.4), and so does `tokio-util`, via the
-`CancellationToken` beside it. `async-trait` looks like it does and does not:
-it desugars to `Pin<Box<dyn Future>>`, so a mismatch is harmless.
+does not — `#[derive(Error)]` implements `std::error::Error`, which is in std. `tokio` will,
+once the ssh and mqtt sources take the pet's channel as a parameter (§4.4), and so will
+`tokio-util` if a `CancellationToken` travels beside it.
 
 Note that features are additive and `default-features = false` cannot be overridden by a
 member, so that decision has to be made in the workspace entry.
@@ -285,7 +285,7 @@ Everything above describes the register and the transports that read it. This se
 describes the other end: what causes a write in the first place. It is the **only** part of
 the system that knows which agent harness is running, and the reason the rest of the design
 does not is that `SessionRecord` (§4.2) carries a *pose*, not a hook name. `Registry`, all
-three `SessionSource`s, the menu and the renderer are already harness-agnostic and stay that
+three sources, the menu and the renderer are already harness-agnostic and stay that
 way.
 
 ```
@@ -314,7 +314,7 @@ way.
    │  local            │  ssh                 │  mqtt                │
    │  read the file,   │  `ssh <host>         │  remi-hook also      │
    │  `notify` says    │  remi-hook watch`,   │  publishes retained; │
-   │  when it changed  │  read NDJSON lines   │  we subscribe        │
+   │  when it changed  │  read JSON lines     │  we subscribe        │
    └────────┬──────────┴──────────────────────┴──────────────────────┘
             ▼  STEP 4
    ┌──────────────────────────────────────────────────────────┐
@@ -548,8 +548,8 @@ crates/remi-core/src/
 │  ├─ claude.rs    # stdin JSON -> HookInput {session, cwd, transcript}   (push)
 │  └─ opencode.rs  # not yet: the plugin passes flags, stdin is never read; SSE fallback later
 └─ source/         # how the PET READS — one file per transport
-   ├─ mod.rs       # SessionSource trait, SessionUpdate
-   ├─ local.rs     # watch the local state dir
+   ├─ mod.rs       # ConnectionId, SessionUpdate
+   ├─ local.rs     # StateDirWatch: the state dir's whole listing, again on every change
    ├─ ssh.rs       # stream from `ssh <host> remi-hook watch`
    └─ mqtt.rs      # subscribe to remi/+/+/+/state (rumqttc)
 ```
@@ -616,44 +616,55 @@ make a live session look hours old.
 
 ### 4.3 `registry.rs` — the only real logic
 
-Pure. No I/O, no async. Feed it updates and a clock; ask it two questions.
+Pure. No I/O, no async, no clock of its own. Feed it updates with the time they arrived; ask it
+two questions with the time now.
 
 ```rust
-pub struct ConnectionId(String);   // config-assigned, e.g. "local", "plume"
-pub struct HarnessId(String);      // "claude-code" | "opencode" | "codex"
-pub struct SessionId(String);
 pub struct SessionKey {
-    pub connection: ConnectionId,
+    pub connection: ConnectionId,  // config-assigned, e.g. "local", "plume"
     pub harness:    HarnessId,     // one box can run two harnesses at once
     pub session:    SessionId,
 }
 
-pub struct SessionStatus {
-    pub key:      SessionKey,
-    pub record:   SessionRecord,
-    pub received: Instant,          // receiver clock — Proud decay and "last heard" only
+pub enum Selection { Auto, Pinned(SessionKey) }            // Auto is the default
+
+pub struct Registry {
+    sessions:    BTreeMap<SessionKey, StoredSession>,      // record, received, ended
+    connections: BTreeMap<ConnectionId, ConnectionStatus>, // Up | Lost { reason }
+    selection:   Selection,
 }
-
-pub enum Selection { Auto, Pinned(SessionKey) }
-
-pub struct Registry { /* BTreeMap<SessionKey, SessionStatus>, per-connection health */ }
 
 impl Registry {
-    pub fn apply(&mut self, conn: &ConnectionId, update: SessionUpdate);
+    pub fn apply(&mut self, connection: ConnectionId, update: SessionUpdate, now: Instant);
+    pub fn select(&mut self, selection: Selection);
+    pub fn selection(&self) -> &Selection;
 
-    /// Grouped by connection, most-recently-active first. Drives the context menu.
-    pub fn menu(&self, now: Instant) -> Vec<MenuGroup>;
+    /// Connection → harness → sessions, newest first. Drives the context menu.
+    pub fn menu(&self, now: Instant) -> Vec<ConnectionMenu>;
 
-    /// Which session the selection currently resolves to.
-    pub fn resolve(&self, sel: &Selection, now: Instant) -> Option<SessionKey>;
-
-    /// What to draw.
-    pub fn effective(&self, sel: &Selection, now: Instant) -> PetState;
+    /// What to draw. `None` means Remi shows `Offline`.
+    pub fn current(&self, now: Instant) -> Option<SessionEntry>;
 }
+
+// One session as the UI shows it, computed on every call, because its pose changes with time.
+pub struct SessionEntry { key, label, pose, last_heard: Duration, record }
 ```
 
-`effective` applies, in order: no resolved session → `Offline`; record says `Offline` → pass
-through; `Proud` older than `proud_decays` (8 s) → `Idle`; otherwise the state as published.
+The registry stores only facts — each session's record, when it arrived, and when it ended —
+and works out everything it shows from those and `now`, so time passing needs no timer inside.
+
+**`apply`:**
+
+- `Upsert` stores the record unless its `ts` is older than the stored one. A tie is taken,
+  since `ts` is whole seconds. `Snapshot` replaces the connection's sessions wholesale.
+- Hearing an identical record again keeps its arrival time, so a reconnect's resent snapshot
+  restarts neither `Proud` nor "last heard".
+- A session missing from its connection's next snapshot, or `Removed` over MQTT, has **ended**.
+  Nothing on the wire announces it.
+- Anything but `ConnectionLost` marks the connection up. A lost connection keeps its sessions.
+
+**Pose**, per session: ended → `Offline`; `Proud` older than 8 s → `Idle`; otherwise the state as
+published.
 
 **No other pose times out.** Hooks write only on events, so a session blocked on an approval
 prompt, or running a long tool, is silent for as long as that lasts — a timeout would turn
@@ -661,13 +672,24 @@ exactly the waiting pose into `Idle`. A session that dies without ending keeps i
 Auto moves on as soon as any other session is newer, the menu shows how long ago it was last
 heard from, and the 24 h prune (§3.2) removes its file.
 
-`Selection::Auto` resolves to the single most recently active session across all connections.
-It is a deterministic tiebreak on `ts`, **not** a priority merge — the aggregation problem the
-brief §4 removed stays removed, because only ever one session is rendered. Auto is the default
-so the pet does something sensible before the user has picked anything, and so it doesn't go
-dead when a pinned session ends.
+**Ended sessions** stay listed as `Offline` for 10 s, then are dropped. A **pinned** session is
+the exception: it stays, `Offline`, until the user selects something else, because a session
+the user chose should never vanish from under them. That is why the registry holds the
+selection: whether an ended session may be dropped depends on it.
 
-This file gets a real table-driven unit-test suite over (updates, elapsed) → expected menu and
+**Auto** shows the session with the newest `ts` across all connections, ties going to the last
+key. It is a deterministic choice, **not** a priority merge — the aggregation problem the brief
+§4 removed stays removed, because only ever one session is rendered. When that session ends,
+Auto shows it `Offline` for the same 10 s, then moves on to the next newest. Auto is the default
+so the pet does something sensible before the user has picked anything. A pin the pet has never
+heard of — restored from config for a session that ended while the pet was closed — follows
+Auto until the session appears.
+
+**The menu** lists connections by name, each one's harnesses by id, and each harness's sessions
+newest first, so rows don't jump around between rebuilds. A connection with no sessions is still
+listed. Labels are chosen here: `title`, else `cwd`, else the session id.
+
+This file has a table-driven unit-test suite over (updates, elapsed) → expected menu and
 expected state. It is also what makes a transport swap harmless.
 
 ### 4.4 `source/mod.rs` — the transport abstraction
@@ -680,21 +702,31 @@ pub enum SessionUpdate {
     ConnectionUp,
     ConnectionLost { reason: String },
 }
-
-#[async_trait]
-pub trait SessionSource: Send + Sync {
-    fn id(&self) -> &ConnectionId;
-    async fn run(self: Arc<Self>, tx: Sender<(ConnectionId, SessionUpdate)>, cancel: CancellationToken);
-}
 ```
 
-Every source funnels into one channel; the registry is the only consumer. Adding a transport
-means adding a file here and a config variant — nothing else in the app moves.
+There is no `SessionSource` trait. The desktop matches on each connection's configured kind and
+starts that transport's own entry point; a trait would exist only to keep different sources in
+one list, which a three-armed `match` already does. Every source funnels into one channel of
+`(ConnectionId, SessionUpdate)`, and one task in the desktop owns the `Registry`: it calls
+`apply` for each message, ticks at 1 Hz so `Proud` and ended sessions age without a message, and
+is the only place that reads the clock. Adding a transport means adding a file here and a config
+variant — nothing else in the app moves.
+
+A trait stays a **might-do**. Revisit it once `ssh` and `mqtt` both exist: if their `run` loops
+duplicate the same lifecycle — connect, `ConnectionUp`, deliver, `ConnectionLost`, back off,
+retry, stop on cancel — pull that shared part out, as a plain function first, and as a trait
+only if it genuinely needs to call back into each source.
+
+`local` is `StateDirWatch`. It is synchronous — `notify` delivers events on a thread of its own —
+so the desktop runs it on a thread and forwards each listing as a `Snapshot`. It never interprets
+file events: any event, after 50 ms for the burst to settle, means "list the directory again",
+and only a listing that differs from the last one is reported. Each platform's watcher merges,
+reorders and names events differently; a fresh listing is the same everywhere.
 
 | source | mechanism | latency | what the user must set up |
 |---|---|---|---|
-| `local` | `notify` watch on the state dir + an initial scan | instant | nothing |
-| `ssh` | long-lived `ssh <host> remi-hook watch`, NDJSON on stdout | instant | nothing beyond being able to `ssh <host>` already |
+| `local` | `notify` watch on the state dir; the whole listing on every change | instant | nothing |
+| `ssh` | long-lived `ssh <host> remi-hook watch`, a JSON array per change on stdout | instant | nothing beyond being able to `ssh <host>` already |
 | `mqtt` | subscribe `remi/+/+/+/state`, retained | instant | a broker |
 
 All configured sources run **concurrently** — that is what populates a menu spanning several
@@ -708,14 +740,19 @@ We spawn **one long-lived child process** per configured host:
 ssh -T -o BatchMode=yes <host> '$HOME/.local/bin/remi-hook watch'
 ```
 
-`remi-hook watch` on the remote does the same `notify` watch the local source does, and writes
-one JSON record per line to stdout: a full snapshot first, then deltas. The pet reads lines.
-This is the i3bar/swaybar status protocol, and structurally what VS Code Remote does — ship a
-small helper over the ssh channel and speak a protocol on its stdio.
+`remi-hook watch` on the remote runs the same `StateDirWatch` the local source does, and prints
+the state dir's **whole listing** — one JSON array, exactly what `remi-hook snapshot` prints —
+once at start and again after every change. The pet applies each line as a `Snapshot`. There is
+no delta format: a session that ended is simply missing from the next line. This is the
+i3bar/swaybar status protocol, and structurally what VS Code Remote does — ship a small helper
+over the ssh channel and read its stdout.
 
 Consequences worth naming:
 
 - **No polling**, so no `active_interval` / `idle_interval` knobs and no tuning.
+- **No protocol to invent or version.** Each line is a list of records, and each record carries
+  its own format version.
+- **Resending everything costs nothing:** about 200 B per session, at ~30 changes a minute.
 - **No `ControlMaster` needed**, because there is only ever one connection per host. If we
   ever do need multiplexing, we pass `-o ControlPath=<our own state dir>/cm-%C` on the command
   line — we never write to the user's `~/.ssh/config`.
@@ -807,15 +844,17 @@ record has: `title`, then `cwd`, then the raw `session` id. The three rows above
 each. The record carries all three as-is and **the pet** picks, so changing the display rule
 never requires upgrading `remi-hook` on the remotes.
 
-Built from `Registry::menu()`, rebuilt on every change. Every row shows how long ago its
-session was last heard from, so one that died without ending is recognisable; sessions gone
-from a `Snapshot`, or `SessionEnd`ed, are removed.
+Built from `Registry::menu()`, rebuilt on every change, grouped by connection and then
+harness. Every row shows its pose and how long ago its session was last heard from, so one that
+died without ending is recognisable. A session that ended reads `offline` for 10 s and then
+leaves the menu — unless it is pinned, in which case it stays until another session or Auto is
+chosen (§4.3).
 
 **The tray carries the identical menu.** Not for redundancy: when click-through is on, the
 window cannot receive the right-click at all, and the tray is the only way back. For the same
 reason click-through is never enabled automatically.
 
-Selection persists to config as either `auto` or a pinned `(connection, session)`.
+Selection persists to config as either `auto` or a pinned `(connection, harness, session)`.
 
 **Add host…** opens the install dialog (§6.1): pick a target and a harness, and the pet runs
 the installer for you. Removing a connection from Settings offers to run `remi-hook uninstall`
@@ -920,7 +959,7 @@ remi-hook signal approval-asked --harness claude-code
 remi-hook signal session-end --harness claude-code     # unlink the session's file
 remi-hook signal turn-start --harness opencode --session ses_… --title "…"   # flags override stdin
 remi-hook state writing [--session <id>]    # escape hatch: name a pose directly, no reducer
-remi-hook watch                             # NDJSON on stdout: snapshot, then deltas (ssh source)
+remi-hook watch                             # the snapshot, then again on every change, until stdin closes (ssh source)
 remi-hook snapshot                          # one JSON array of live records, then exit
 remi-hook check                             # resolved state dir, config, harness caps; non-zero if broken
 remi-hook setup   --harness claude-code     # write this machine's harness config; idempotent
@@ -952,8 +991,10 @@ rather than a bug.
 
 `remi-hook watch` is what the pet runs over ssh (§4.4). It watches **the state dir, plus any
 enabled pull adapters** — v1 enables none, but that is the seam a Codex adapter plugs into
-(§3.6), and writing it into the contract now costs nothing. It prints one JSON object per
-line, flushing each, and exits on EOF of stdin or SIGTERM so a dropped ssh connection reaps it.
+(§3.6), and writing it into the contract now costs nothing. It prints the whole listing as one
+JSON array per line, flushing each, first at start and then whenever the listing changes (§4.4).
+It exits when stdin closes, when stdout stops accepting writes, or on SIGTERM, so a dropped ssh
+connection reaps it. It creates the state dir if no session has written yet, and never prunes.
 
 If — and only if — an MQTT forwarder is configured on that machine, the same invocation also
 spawns a **detached** child that publishes the record to `remi/<name>/<harness>/<session>/state` (`<name>`
@@ -1066,9 +1107,10 @@ Three things this must get right:
   silent" failure class, which is otherwise the most likely way M4 fails.
 
 **Version skew** is the price of the manual path — the pet cannot silently upgrade a host it
-cannot reach. The first line `watch` emits carries the hook's version; a pet that reads a
-version it does not understand greys the host out and says *re-run the installer*, rather than
-misparsing records.
+cannot reach. Every record carries its format version `v` (§4.2). When the ssh source meets a
+record with a `v` it does not understand, it reports the connection lost with *re-run the
+installer* as the reason, rather than misparsing records. It parses each record in a line on
+its own, so one unknown record cannot throw away the rest.
 
 ### 6.2 Uninstalling
 
@@ -1117,9 +1159,8 @@ the remote is almost always Linux.
 - **`install.sh` defaults to the latest release**, honours `REMI_VERSION` to pin one, and
   honours `REMI_HOOK_BIN=<path>` to install a locally built binary instead of downloading —
   which is what makes M3 and M4 testable before any release exists.
-- **`remi-hook --version` and the `watch` handshake print the same string**, from
-  `CARGO_PKG_VERSION`. That is the input to the skew check in §6.1. The record-format `v` (§4.2)
-  is bumped independently and is what actually gates compatibility.
+- **`remi-hook --version` prints `CARGO_PKG_VERSION`.** Compatibility itself is gated by the
+  record-format `v` (§4.2), bumped independently; that is what the skew check in §6.1 reads.
 - **PR builds run `cargo test` + `cargo clippy` on all three crates and build `remi-hook` for
   every target**, but do *not* build the Tauri bundles. Those are slow and only a tag needs them.
 - **No `.dmg` — ship the `.app` in a `.tar.gz`** (`tauri build --bundles app`). The `.app`
@@ -1173,13 +1214,14 @@ something end-to-end works before any infrastructure exists.
 | **M7** | Autostart on login, both platforms | Reboot, pet is there |
 | **M8** | OpenCode adapter (plugin, SSE fallback) | Run OpenCode and Claude Code on the same box; menu lists both, labelled by harness; each drives the right pose |
 
-**Where we are — 2026-09-14.** **M0 is underway.** `remi-core` has `state`, `record`, `store`,
-`signal` (the reducer) and `harness` (Claude Code stdin parsing), all with tests; `registry` is
-not started. `remi-hook` implements `signal`, `state` and `snapshot`, and `signal` has run live
-under real Claude Code hooks on the Linux dev box. Session titles are not read yet. Nothing
-after M0 has been started.
+**Where we are — 2026-09-14.** **M0's exit criterion is met.** `remi-core` has `state`,
+`record`, `store`, `signal` (the reducer), `harness` (Claude Code stdin parsing), `registry`,
+and `source::local` (`StateDirWatch`), all with unit tests. `remi-hook` implements `signal`,
+`state`, `snapshot` and `watch`, and `signal` has run live under real Claude Code hooks on the
+Linux dev box. Session titles are not read yet. Nothing after M0 has been started.
 
-Later, unsequenced: Codex adapter (§3.6); local IME indicator; phone push on
+Later, unsequenced: Codex adapter (§3.6); a shared source lifecycle, or a source trait, once
+`ssh` and `mqtt` exist (§4.4); local IME indicator; phone push on
 `WaitingForInput`; `remi-agent` with a persistent connection for real LWT; `07other-to-view`
 re-fetch or re-export.
 
@@ -1204,7 +1246,7 @@ the first milestone that needs a public `install.sh` to exist. Everything before
 ## 10. Testing
 
 - `remi-core`: real unit tests. `registry.rs` table-driven (`Proud` decay, no timeout on any other pose, auto-resolution,
-  a pinned session disappearing, two connections reporting the same host, **one host running
+  ended sessions shown `Offline` and then dropped, a pinned session staying after it ends, two connections reporting the same host, **one host running
   two harnesses**). `record.rs` round-trip + forward-compat (unknown field, unknown `v`).
   `signal.rs` table-driven over (sequence of `Signal`s) → expected poses — in particular that
   an approval answered mid-edit returns to `Writing` and not to `Thinking`, and that the same

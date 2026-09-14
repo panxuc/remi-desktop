@@ -1,6 +1,8 @@
 //! How the pet reads session records: one source per configured connection, each reporting
-//! what it hears as [`SessionUpdate`]s for the registry. For now this holds only the types the
-//! registry takes in; each transport gets its own file here when it is built.
+//! what it hears as [`SessionUpdate`]s for the registry. Each transport has its own file here;
+//! so far only [`local`], which watches a state dir, is built.
+
+pub mod local;
 
 use std::fmt;
 

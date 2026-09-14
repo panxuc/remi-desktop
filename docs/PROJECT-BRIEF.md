@@ -239,7 +239,7 @@ the user from a published `install.sh` for hosts the pet cannot reach. Plan §6.
 | **Swift + AppKit** | Was the right call when this was macOS-only + Touch Bar. Cross-platform requirement killed it; user has never written Swift. |
 | **Touch Bar version** | Touch Bar items are locked to 30 pt tall = 60×60 px. The 360×360 art loses all detail. Also macOS-only, last-gen hardware, needs private DFR APIs. Deferred indefinitely — possibly a later macOS-only extra. |
 | **`ssh tail -F` on an append-only file** | Uses a *log* transport for a *state variable*. Unbounded file growth, rotation races, orphaned remote `tail` processes if the app crashes, buffering quirks. |
-| **`ssh cat` polling a single overwritten file** | Not rejected — **promoted.** Zero infra, level-semantics native, needs `ControlMaster` multiplexing. It is now one of three first-class transports (local file watch / ssh poll / MQTT) behind `remi-core`'s `SessionSource`. See the plan §4.4. |
+| **`ssh cat` polling a single overwritten file** | Not rejected — **promoted.** Zero infra, level-semantics native, needs `ControlMaster` multiplexing. It is now one of three first-class transports (local file watch / ssh poll / MQTT) in `remi-core`'s `source/`. See the plan §4.4. |
 | **`paho-mqtt`** | Requires `cmake` on every build platform. |
 | **Central custom HTTP service** | MQTT gives retained-state + LWT as protocol primitives; hand-rolling those is strictly more work. |
 | **ntfy / Gotify** | Notification-shaped, not state-shaped. Possible *later* addition for phone push on `WaitingForInput`. |

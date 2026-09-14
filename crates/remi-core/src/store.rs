@@ -90,7 +90,8 @@ impl Store {
             .map_err(|source| Error::Record { path, source })
     }
 
-    /// Every readable record, in no particular order. A file is skipped with a warning instead
+    /// Every readable record, sorted by harness and then session, so two listings of a
+    /// directory that hasn't changed compare equal. A file is skipped with a warning instead
     /// of failing the list when it can't be read or parsed — a newer format version, or junk —
     /// or when its record belongs at a different path, so a file's location can always be
     /// trusted to name its harness and session.
@@ -130,7 +131,15 @@ impl Store {
                 records.push(record);
             }
         }
+        records.sort_by(|a, b| (&a.harness, &a.session).cmp(&(&b.harness, &b.session)));
         Ok(records)
+    }
+
+    /// Creates the state dir, readable only by the user, if it doesn't exist yet. Writing a
+    /// record does this by itself; a reader that must watch the directory before any session
+    /// has written needs it first.
+    pub fn create_dir(&self) -> Result<(), Error> {
+        create_private_dir(&self.dir)
     }
 
     /// Deletes the session's file. Not an error if it is already gone.
@@ -421,6 +430,30 @@ mod tests {
         }
 
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_is_sorted_by_harness_then_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::at(tmp.path());
+        for (harness_id, session_id) in [
+            ("opencode", "a"),
+            ("claude-code", "b"),
+            ("claude-code", "a"),
+        ] {
+            store
+                .write(&record(harness_id, session_id, PetState::Thinking))
+                .unwrap();
+        }
+
+        let listed: Vec<_> = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|record| format!("{}/{}", record.harness, record.session))
+            .collect();
+
+        assert_eq!(listed, ["claude-code/a", "claude-code/b", "opencode/a"]);
     }
 
     #[test]
