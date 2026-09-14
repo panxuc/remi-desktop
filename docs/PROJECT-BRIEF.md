@@ -173,19 +173,28 @@ file is pruned after 24 h. Add the agent later only if that becomes annoying.
 
 ## 5. Pet state machine
 
-`PetState` enum in `remi-core`, mapped to Claude Code hooks. Schema checked against the
-Claude Code hooks documentation 2026-09-09 (local binary is v2.1.266).
+`PetState` enum in `remi-core`, mapped to Claude Code hooks. Rechecked against the raw Claude
+Code hooks reference, changelog and settings schema 2026-09-14 (local binary is v2.1.270).
 
 | Claude Code hook | matcher | PetState | Spine |
 |---|---|---|---|
 | `UserPromptSubmit` | — | `Thinking` | `b` |
 | `PreToolUse` | `Read\|Grep\|Glob` | `Viewing` | `a` |
 | `PreToolUse` | `Edit\|Write` | `Writing` | `d` |
-| `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog` | `WaitingForInput` | `e` |
-| `PostToolUse` | `*` (every tool) | back to whatever preceded the prompt | — |
-| `Stop` | — | `Proud` → decays to `Idle` | `c` |
+| `MessageDisplay` | — | `Replying` | not chosen yet |
+| `PermissionRequest` | `*` | `WaitingForInput` | `e` |
+| `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog\|elicitation_url_dialog` | `WaitingForInput` | `e` |
+| `PostToolUse` | `*` (every tool) | `Thinking` (clears a prompt) | `b` |
+| `PostToolUseFailure` | `*` | `Thinking` | `b` |
+| `Stop` / `StopFailure` | — | `Proud` → decays to `Idle` | `c` |
 | `SessionEnd` | — | `Offline` | — |
 | (8 s after `Stop`) | — | `Idle` | `a_win` |
+
+`MessageDisplay` (Claude Code 2.1.152+) runs while reply text streams to the screen, and never
+for hidden thinking, so it tells `Replying` apart from `Thinking`. `PermissionRequest` fires the
+moment a prompt appears, where the `permission_prompt` notification waits about six seconds.
+`PostToolUse` runs only for tools that succeed, hence `PostToolUseFailure`. `StopFailure` runs
+instead of `Stop` when a turn dies on an API error. Details in plan §3.5.
 
 ⚠️ **`PostToolUse`, matched on `*`, is what clears the waiting pose, and it is not optional.**
 Claude Code has no "approval granted" hook. The sequence is `PreToolUse` → `Writing`,
@@ -198,7 +207,7 @@ matcher to `Edit|Write` reintroduces the bug for prompts raised by any other too
 part of the fix. Reducer rules in plan §3.5; the settings block in plan §6.
 
 This table is the Claude Code instance of a general mechanism: adapters emit a neutral
-seven-event vocabulary and one reducer turns those into poses, so the same policy is not
+event vocabulary and one reducer turns those into poses, so the same policy is not
 written down once per harness. Plan §3.4–3.6 holds the mechanism and the OpenCode table.
 
 ⚠️ **`Notification` must be matched on `notification_type`, never taken bare.** It fires for
@@ -223,8 +232,10 @@ what `remi-hook` reads. Also present and worth knowing:
   is annoying in practice, drop records carrying `agent_id`.
 - `prompt_id` (v2.1.196+), and `last_assistant_message` on `Stop`. Unused for now.
 
-Available hook events: `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Notification`,
-`Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact`.
+Claude Code has over thirty hook events; the full list is in its hooks reference. Beyond the
+table above, worth knowing: `PermissionDenied` fires only for auto-mode denials, never when you
+deny a prompt yourself; nothing at all fires when you interrupt a turn; and the settings
+schema rejects unknown keys in a hook entry, so remi's hooks can't carry a marker.
 
 Hooks are configured in `~/.claude/settings.json` on **each machine Claude runs on**.
 Getting them there is `remi-hook setup`, run *on* that machine — by the pet over ssh, or by
@@ -398,7 +409,7 @@ What was missing was the vocabulary in between. Today the hook→pose mapping li
 `settings.json` matcher, which is free and exactly right for Claude Code and does not
 generalise: a harness that hands you one undifferentiated event stream has to do the mapping
 in code. Three adapters each mapping straight to a pose means the policy "an edit means
-`Writing`" is written down three times and drifts. Hence the neutral seven-event vocabulary
+`Writing`" is written down three times and drifts. Hence the neutral event vocabulary
 and the single reducer in plan §3.5.
 
 ### Push beats pull, and it is not a style preference

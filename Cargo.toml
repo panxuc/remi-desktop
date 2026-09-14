@@ -10,12 +10,15 @@ edition = "2024"
 # Hoisted because the version agreement is load-bearing, not for tidiness:
 # serde/serde_json/tokio/tokio-util all appear in `remi-core`'s *public* API, so a member on
 # an incompatible version would fail to typecheck against types it already holds.
-# thiserror, tracing and tempfile are here because more than one member uses them; clap is the
-# binaries' CLI parser.
+# thiserror, tracing, tempfile and directories are here because more than one member uses them;
+# clap is the binaries' CLI parser.
+# serde_json keeps object keys in their original order, because `remi-hook setup` rewrites the
+# user's own settings files and must not shuffle keys it never touched.
 [workspace.dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+directories = "6.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 tracing = "0.1.44"

@@ -35,7 +35,7 @@
 | 18 | Two clocks | `ts` (publisher) orders records. The receiver's monotonic clock times `Proud` decay and "last heard". Prevents clock skew distorting either | §4.2 |
 | 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
 | 20 | Naming | `remi-desktop`, bundle id `moe.anything.remi`. `touchbar-remi` retired | §11 |
-| 21 | Harness support | Adapters emit a **neutral seven-event vocabulary**; one reducer turns those into poses. No adapter names a pose | §3.5 |
+| 21 | Harness support | Adapters emit a **neutral event vocabulary**; one reducer turns those into poses. No adapter names a pose | §3.5 |
 | 22 | Which harnesses in v1 | **Claude Code and OpenCode.** Codex deferred — pull-only, lossy tool classification, approvals unverified | §3.6, §11 |
 | 23 | Push over pull | Prefer the harness spawning `remi-hook` (a hook, a plugin) over us tailing a log or holding a subscription. Push needs nothing resident and works under all three transports | §3.4 |
 | 24 | Session identity | `(connection, harness, session)`. One box can run two harnesses at once, and the state dir, `watch` output and MQTT topic all name the harness | §3.2, §4.2, §4.3 |
@@ -360,7 +360,7 @@ Per harness:
 
 Adapters do **not** map their harness's events straight to a `PetState`. If they did, the
 policy "an edit means `Writing`" would be written down once per harness and would drift.
-Instead every adapter produces one of eight neutral events, and one reducer turns those into
+Instead every adapter produces one of nine neutral events, and one reducer turns those into
 poses:
 
 ```
@@ -374,6 +374,7 @@ pub enum Signal {
     TurnStart,
     ReadStart,
     EditStart,
+    Reply,          // reply text is streaming to the user; may repeat for one reply
     ToolEnd,
     ApprovalAsked,
     ApprovalAnswered,
@@ -419,6 +420,7 @@ The rules, in full, because "back to `_resume`" is ambiguous otherwise:
 |---|---|---|---|
 | `ReadStart` | any | `Viewing` | cleared |
 | `EditStart` | any | `Writing` | cleared |
+| `Reply` | any | `Replying` | cleared |
 | `ApprovalAsked` | empty | `WaitingForInput` | **current pose**, stored |
 | `ApprovalAsked` | set | `WaitingForInput` | kept |
 | `ApprovalAnswered` | set | the stored pose | cleared |
@@ -452,15 +454,40 @@ Hook name plus the matcher configured in `~/.claude/settings.json` (§6):
 | `UserPromptSubmit` | `TurnStart` | `Thinking` | `b` |
 | `PreToolUse` · `Read\|Grep\|Glob` | `ReadStart` | `Viewing` | `a` |
 | `PreToolUse` · `Edit\|Write` | `EditStart` | `Writing` | `d` |
-| `Notification` · `permission_prompt\|agent_needs_input\|elicitation_dialog` | `ApprovalAsked` | `WaitingForInput` | `e` |
-| `PostToolUse` | `ToolEnd` | `Thinking` (clears a prompt) | `b` |
+| `MessageDisplay` | `Reply` | `Replying` | not chosen yet (M2) |
+| `PermissionRequest` · `*` | `ApprovalAsked` | `WaitingForInput` | `e` |
+| `Notification` · `permission_prompt\|agent_needs_input\|elicitation_dialog\|elicitation_url_dialog` | `ApprovalAsked` | `WaitingForInput` | `e` |
+| `PostToolUse` · `*` | `ToolEnd` | `Thinking` (clears a prompt) | `b` |
+| `PostToolUseFailure` · `*` | `ToolEnd` | `Thinking` | `b` |
 | `Stop` | `TurnEnd` | `Proud` → `Idle` after 8 s | `c` |
+| `StopFailure` | `TurnEnd` | `Proud` → `Idle` after 8 s | `c` |
 | `SessionEnd` | `SessionEnd` | file removed; pet shows `Offline` | — |
 
 ⚠️ **`PostToolUse` is not optional.** Claude Code has no "approval granted" hook, so without
 it nothing publishes after you approve a prompt: Remi holds the waiting pose while Claude is
 already working, until the next tool call or the end of the turn. That is a false positive on
-the one pose this project exists for. `PostToolUse` is the approval-cleared signal.
+the one pose this project exists for. `PostToolUse` is the approval-cleared signal. It runs only
+for tools that succeed, so `PostToolUseFailure` sends the same `ToolEnd` for tools that fail.
+
+**`MessageDisplay` is what separates `Replying` from `Thinking`.** It runs for each batch of
+reply text as it streams, never for Claude's hidden thinking or for messages that only call
+tools. It is synchronous — Claude Code holds each batch on screen until the hook returns — so
+it has a 2 s timeout; `remi-hook signal` measured about 3 ms, and after the first batch the
+unchanged-record rule (§3.3) skips the write. Its `final` field is ignored: the pose stays
+`Replying` until the next event, which keeps the event name on the command line rather than in
+stdin.
+
+**`PermissionRequest` makes the waiting pose immediate.** The `permission_prompt` notification
+fires only after a prompt has waited about six seconds, and each keystroke restarts that wait.
+The notification stays as a backup, because a sandboxed command's network prompt produces only
+the notification; the second `ApprovalAsked` is harmless (§3.5 rules).
+
+**`StopFailure` runs instead of `Stop`** when a turn ends on an API error such as a rate limit.
+Since no pose times out, leaving it out would hold the pose where the error found it.
+
+Two gaps no Claude Code hook can close: denying a prompt fires nothing — the agent's reply
+(`Reply`) or the end of the turn clears the pose — and interrupting a turn fires nothing, so the
+pose stays until the next prompt.
 
 #### OpenCode
 
@@ -477,6 +504,9 @@ Event names taken from the live API schema of `opencode serve` (verified against
 | `permission.v2.replied` | `ApprovalAnswered` | back to `_resume` | — |
 | `session.idle` | `TurnEnd` | `Proud` → `Idle` | `c` |
 | `session.deleted` | `SessionEnd` | file removed; pet shows `Offline` | — |
+
+`Reply` has no OpenCode mapping yet; which of its events carries streamed reply text is to be
+checked at M8.
 
 OpenCode is the **best-instrumented** of the three: it is the only one with both approval
 edges, so `ApprovalAnswered` is a real event there rather than an inference from `PostToolUse`.
@@ -564,11 +594,19 @@ only `source/`.
 ```rust
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PetState { Thinking, Viewing, Writing, WaitingForInput, Proud, Idle, Offline }
+pub enum PetState { Thinking, Viewing, Writing, Replying, WaitingForInput, Proud, Idle, Offline }
 ```
 
 `Idle` is never published — it is synthesised locally by the registry from `Proud` decay.
 Keeping it in the same enum means the renderer has exactly one input type.
+
+A state names what the agent is doing, not which animation plays, so it is not one-to-one with
+the Spine asset. `Replying` has no animation of its own yet, `Offline` has none, and several
+states may end up sharing one; that mapping is the renderer's (§5.3). The distinction lives in
+the record anyway, because the reducer runs in `remi-hook` on every remote: telling two
+activities apart later would mean upgrading every host, while changing which animation a state
+plays is a change to the pet alone. So `Writing` and `Replying` stay separate even if M2 gives
+them the same animation.
 
 ### 4.2 `record.rs` — the contract
 
@@ -879,7 +917,9 @@ structurally cannot do (brief §11). `renderer/gif.js` is kept as a ~40-line fal
 the same contract, for the case where a transparent WebGL canvas turns out not to composite.
 
 Animation mapping (brief §2.2): `a`→Viewing, `a_win`→Idle, `b`→Thinking, `c`→Proud,
-`d`→Writing, `e`→WaitingForInput. `light` is a flavour variant; `0` is never played.
+`d`→Writing, `e`→WaitingForInput. `light` is a flavour variant; `0` is never played. Replying has
+no animation yet: `d_win` (writing intermittently) is the candidate, to be judged by watching it
+at M2 rather than from its name.
 
 The 60 fps loop is real GPU work in an always-on-top window on an 8 GB M2. Mitigations, in
 order: pause the loop when the window is fully occluded or the state is `Offline`; drop to a
@@ -955,15 +995,16 @@ the OpenCode plugin invokes the same binary the same way.
 ```sh
 remi-hook signal turn-start --harness claude-code      # a neutral event (§3.5) — the normal entry point
 remi-hook signal edit-start --harness claude-code      # read-start / edit-start: the tool's class is the event
+remi-hook signal reply --harness claude-code           # reply text is streaming to the user
 remi-hook signal approval-asked --harness claude-code
 remi-hook signal session-end --harness claude-code     # unlink the session's file
 remi-hook signal turn-start --harness opencode --session ses_… --title "…"   # flags override stdin
 remi-hook state writing [--session <id>]    # escape hatch: name a pose directly, no reducer
 remi-hook watch                             # the snapshot, then again on every change, until stdin closes (ssh source)
 remi-hook snapshot                          # one JSON array of live records, then exit
-remi-hook check                             # resolved state dir, config, harness caps; non-zero if broken
-remi-hook setup   --harness claude-code     # write this machine's harness config; idempotent
-remi-hook uninstall                         # remove exactly what setup wrote
+remi-hook check                             # this program's path, the state dir, each harness's hooks; non-zero if anything is wrong
+remi-hook setup   --harness claude-code     # add remi's hooks to this machine's harness config; idempotent, keeps a .bak
+remi-hook uninstall                         # remove exactly the hooks setup added
 ```
 
 `remi-hook signal <event>` is what harnesses call. It reads stdin only to pick up the session
@@ -985,9 +1026,12 @@ Useful for testing the pet end to end, and for any harness that can run a
 command but whose events we have not modelled. It cannot express "return to what you were
 doing", so it is not what an adapter should use.
 
-`remi-hook check` prints the `HarnessCaps` of each configured adapter (§3.6). Support is not
-uniform across harnesses, and a pose that never fires should be legible as a capability gap
-rather than a bug.
+`remi-hook check` prints this program's path, the state dir with its session count, and for
+each harness whether every hook `setup` would write is in place — listing the missing ones, and
+remi hooks `setup` wouldn't write, such as those from an older version or naming another copy of
+`remi-hook`. It exits non-zero on any problem. Printing each adapter's `HarnessCaps` (§3.6) is
+still to come: support is not uniform across harnesses, and a pose that never fires should be
+legible as a capability gap rather than a bug.
 
 `remi-hook watch` is what the pet runs over ssh (§4.4). It watches **the state dir, plus any
 enabled pull adapters** — v1 enables none, but that is the seam a Codex adapter plugs into
@@ -1007,39 +1051,47 @@ it, ended sessions haunt the menu of every pet that reconnects.
 Exit code is **always 0**. A non-zero exit from a `PreToolUse` hook can block the tool call;
 a pet must never be able to stop Claude working.
 
-Configured in `~/.claude/settings.json` on each machine:
+Configured in `~/.claude/settings.json` on each machine — or `$CLAUDE_CONFIG_DIR/settings.json`
+when that is set, as Claude Code itself does — by `remi-hook setup`, which writes this block
+with the absolute path of the `remi-hook` it ran as (shortened to `remi-hook` here):
 
 ```json
 { "hooks": {
-  "UserPromptSubmit": [ {
-    "hooks": [ { "type": "command", "command": "remi-hook signal turn-start --harness claude-code", "timeout": 5 } ]
-  } ],
-  "PreToolUse": [ {
-    "matcher": "Read|Grep|Glob",
-    "hooks": [ { "type": "command", "command": "remi-hook signal read-start --harness claude-code", "timeout": 5 } ]
-  }, {
-    "matcher": "Edit|Write",
-    "hooks": [ { "type": "command", "command": "remi-hook signal edit-start --harness claude-code", "timeout": 5 } ]
-  } ],
-  "PostToolUse": [ {
-    "matcher": "*",
-    "hooks": [ { "type": "command", "command": "remi-hook signal tool-end --harness claude-code", "timeout": 5 } ]
-  } ],
-  "Notification": [ {
-    "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",
-    "hooks": [ { "type": "command", "command": "remi-hook signal approval-asked --harness claude-code", "timeout": 5 } ]
-  } ],
-  "Stop": [ {
-    "hooks": [ { "type": "command", "command": "remi-hook signal turn-end --harness claude-code", "timeout": 5 } ]
-  } ],
-  "SessionEnd": [ {
-    "hooks": [ { "type": "command", "command": "remi-hook signal session-end --harness claude-code", "timeout": 5 } ]
-  } ]
+  "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "remi-hook signal turn-start --harness claude-code", "timeout": 5 } ] } ],
+  "PreToolUse": [
+    { "matcher": "Read|Grep|Glob", "hooks": [ { "type": "command", "command": "remi-hook signal read-start --harness claude-code", "timeout": 5 } ] },
+    { "matcher": "Edit|Write",     "hooks": [ { "type": "command", "command": "remi-hook signal edit-start --harness claude-code", "timeout": 5 } ] }
+  ],
+  "PostToolUse":        [ { "matcher": "*", "hooks": [ { "type": "command", "command": "remi-hook signal tool-end --harness claude-code", "timeout": 5 } ] } ],
+  "PostToolUseFailure": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "remi-hook signal tool-end --harness claude-code", "timeout": 5 } ] } ],
+  "PermissionRequest":  [ { "matcher": "*", "hooks": [ { "type": "command", "command": "remi-hook signal approval-asked --harness claude-code", "timeout": 5 } ] } ],
+  "Notification": [ { "matcher": "permission_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog",
+                      "hooks": [ { "type": "command", "command": "remi-hook signal approval-asked --harness claude-code", "timeout": 5 } ] } ],
+  "MessageDisplay": [ { "hooks": [ { "type": "command", "command": "remi-hook signal reply --harness claude-code", "timeout": 2 } ] } ],
+  "Stop":           [ { "hooks": [ { "type": "command", "command": "remi-hook signal turn-end --harness claude-code", "timeout": 5 } ] } ],
+  "StopFailure":    [ { "hooks": [ { "type": "command", "command": "remi-hook signal turn-end --harness claude-code", "timeout": 5 } ] } ],
+  "SessionEnd":     [ { "hooks": [ { "type": "command", "command": "remi-hook signal session-end --harness claude-code", "timeout": 5 } ] } ]
 } }
 ```
 
-This is the complete v1 Claude Code configuration — all seven rows of the mapping table in
-§3.5, and it is what `remi-hook install --host <name>` merges into a remote's settings.
+This is the complete v1 Claude Code configuration — every row of the Claude Code table in §3.5.
+
+**How `setup` edits the file.** The file is the user's, so:
+
+- remi's hooks are recognised by their command — a program named `remi-hook` running `signal` —
+  not by a marker. Claude Code's settings schema forbids unknown keys in a hook entry, and a
+  file that fails validation opens a "Settings Error" dialog at session start. The same rule
+  adopts hooks written by hand before `setup` existed.
+- `setup` removes every remi hook, and any group or event list only they were in, then appends
+  one group per row above. Everything else — other keys, the user's own hooks, even in a group
+  shared with remi's — stays as it was, keys in their original order.
+- If the result equals the file as read, nothing is written, so running `setup` again is a
+  no-op. Otherwise the new file is written beside the old one and renamed over it, the old
+  contents are kept as `settings.json.bak`, the file keeps its permissions, and a symlinked
+  settings file is written through so the link survives.
+- A file that isn't valid JSON, or whose `hooks` isn't shaped as documented, is refused and
+  left untouched.
+- `uninstall` is the removal half on its own.
 
 Two matchers carry load and neither is optional:
 

@@ -422,7 +422,14 @@ mod tests {
     fn no_other_pose_times_out() {
         let t0 = Instant::now();
         let a_day_later = t0 + Duration::from_secs(24 * 60 * 60);
-        for state in [Thinking, Viewing, Writing, WaitingForInput, Offline] {
+        for state in [
+            Thinking,
+            Viewing,
+            Writing,
+            Replying,
+            WaitingForInput,
+            Offline,
+        ] {
             let mut registry = Registry::default();
             upsert(
                 &mut registry,

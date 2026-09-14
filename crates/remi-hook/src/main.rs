@@ -1,8 +1,10 @@
 mod error;
 mod logging;
+mod setup;
 
 use std::io::{self, IsTerminal, Write};
 use std::panic;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +18,7 @@ use remi_core::state::PetState;
 use remi_core::store::{self, Store, Update};
 
 use crate::error::Error;
+use crate::setup::Saved;
 
 #[derive(Parser)]
 #[command(version, about = "Writes agent session state for the Remi desktop pet")]
@@ -36,12 +39,13 @@ enum Command {
     Watch,
     /// Print live records as one JSON array, then exit.
     Snapshot,
-    /// Verify this machine is set up: print the resolved state dir, config, and harness
-    /// capabilities, and exit non-zero if something is wrong.
+    /// Verify this machine is set up: print this program's path, the state dir, and whether
+    /// each harness's hooks are in place, and exit non-zero if something is wrong.
     Check,
-    /// Write this machine's harness configuration. Idempotent.
+    /// Add remi's hooks to this machine's harness configuration, running this copy of
+    /// `remi-hook`. Safe to run again; the previous file is kept as a `.bak`.
     Setup(SetupArgs),
-    /// Remove exactly what `setup` wrote.
+    /// Remove exactly what `setup` added.
     Uninstall {
         /// Also remove the binary and the state dir.
         #[arg(long)]
@@ -103,6 +107,9 @@ enum SignalEvent {
     ReadStart,
     /// The agent called a tool that changes files (edit, write). Remi: writing.
     EditStart,
+    /// Reply text from the agent is appearing for the user; sent again for each piece as it
+    /// streams. Remi: replying.
+    Reply,
     /// A tool call of either kind finished, whether or not it succeeded. Remi: thinking.
     /// On harnesses without an "approval answered" event, this is what clears the waiting
     /// pose.
@@ -126,6 +133,7 @@ impl From<SignalEvent> for Signal {
             SignalEvent::TurnStart => Signal::TurnStart,
             SignalEvent::ReadStart => Signal::ReadStart,
             SignalEvent::EditStart => Signal::EditStart,
+            SignalEvent::Reply => Signal::Reply,
             SignalEvent::ToolEnd => Signal::ToolEnd,
             SignalEvent::ApprovalAsked => Signal::ApprovalAsked,
             SignalEvent::ApprovalAnswered => Signal::ApprovalAnswered,
@@ -157,6 +165,8 @@ enum Pose {
     Viewing,
     /// Changing files.
     Writing,
+    /// Writing its reply to the user.
+    Replying,
     /// Blocked on the user.
     WaitingForInput,
     /// Just finished a turn; fades to idle.
@@ -171,6 +181,7 @@ impl From<Pose> for PetState {
             Pose::Thinking => PetState::Thinking,
             Pose::Viewing => PetState::Viewing,
             Pose::Writing => PetState::Writing,
+            Pose::Replying => PetState::Replying,
             Pose::WaitingForInput => PetState::WaitingForInput,
             Pose::Proud => PetState::Proud,
             Pose::Offline => PetState::Offline,
@@ -199,6 +210,11 @@ struct Env {
     /// Last component of the directory the hook was started in. Never the full path, which
     /// would reveal where the user keeps things.
     cwd_name: Option<String>,
+    /// Where this program is, which is what `setup` makes hooks run. `None` if the OS won't
+    /// say.
+    exe: Option<PathBuf>,
+    /// Claude Code's user settings file.
+    claude_settings: PathBuf,
 }
 
 impl Env {
@@ -213,6 +229,8 @@ impl Env {
             store: Store::locate()?,
             now,
             cwd_name,
+            exe: std::env::current_exe().ok(),
+            claude_settings: setup::claude::settings_path()?,
         })
     }
 }
@@ -264,9 +282,9 @@ fn run(command: Command, env: &Env) -> Result<(), Error> {
         Command::State(args) => state(args, env),
         Command::Watch => watch(env),
         Command::Snapshot => snapshot(env),
-        Command::Check => check(),
-        Command::Setup(args) => setup(args),
-        Command::Uninstall { purge } => uninstall(purge),
+        Command::Check => check(env),
+        Command::Setup(args) => setup(args, env),
+        Command::Uninstall { purge } => uninstall(purge, env),
     }
 }
 
@@ -329,13 +347,7 @@ fn state(args: StateArgs, env: &Env) -> Result<(), Error> {
 
 fn watch(env: &Env) -> Result<(), Error> {
     let (mut dir_watch, mut listing) = StateDirWatch::start(env.store.clone())?;
-
-    // Whoever runs `watch` holds its stdin open for as long as it wants output — for the pet,
-    // that is the ssh connection — so stdin closing is the signal to stop.
-    thread::spawn(|| {
-        let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
-        std::process::exit(0);
-    });
+    let mut watching_stdin = false;
 
     loop {
         match print_records(&listing) {
@@ -344,6 +356,19 @@ fn watch(env: &Env) -> Result<(), Error> {
             Err(Error::Stdout(err)) if err.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
             Err(err) => return Err(err),
         }
+
+        // Whoever runs `watch` holds its stdin open for as long as it wants output — for the
+        // pet, that is the ssh connection — so stdin closing is the signal to stop. Started
+        // only after the first listing is out, so a stdin that is already closed still gets
+        // that listing before the exit.
+        if !watching_stdin {
+            thread::spawn(|| {
+                let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
+                std::process::exit(0);
+            });
+            watching_stdin = true;
+        }
+
         listing = dir_watch.next_snapshot()?;
     }
 }
@@ -352,24 +377,151 @@ fn snapshot(env: &Env) -> Result<(), Error> {
     print_records(&env.store.list()?)
 }
 
-fn check() -> Result<(), Error> {
-    Err(Error::NotImplemented("check"))
+/// Prints what a pet will find on this machine, and fails if anything would stop it working.
+/// Keeps going after a problem, so one run shows all of them.
+fn check(env: &Env) -> Result<(), Error> {
+    let mut problems = 0;
+
+    match &env.exe {
+        Some(exe) => print_line(&format!(
+            "remi-hook {} at {}",
+            env!("CARGO_PKG_VERSION"),
+            exe.display()
+        ))?,
+        None => {
+            problems += 1;
+            print_line("remi-hook: cannot find this program's own path")?;
+        }
+    }
+
+    match env.store.list() {
+        Ok(records) => print_line(&format!(
+            "state dir: {} ({} sessions)",
+            env.store.dir().display(),
+            records.len()
+        ))?,
+        Err(err) => {
+            problems += 1;
+            print_line(&format!("state dir: {err}"))?;
+        }
+    }
+
+    let settings = env.claude_settings.display();
+    match env.exe.as_deref() {
+        None => print_line(&format!(
+            "claude-code: {settings}: not checked, since hooks must name this program's path"
+        ))?,
+        Some(exe) => match setup::claude::inspect(&env.claude_settings, exe) {
+            Err(err) => {
+                problems += 1;
+                print_line(&format!("claude-code: {err}"))?;
+            }
+            Ok(inspection) if inspection.missing.is_empty() && inspection.unexpected.is_empty() => {
+                print_line(&format!(
+                    "claude-code: all {} hooks set up in {settings}",
+                    inspection.expected
+                ))?
+            }
+            Ok(inspection) => {
+                problems += inspection.missing.len() + inspection.unexpected.len();
+                print_line(&format!("claude-code: {settings}"))?;
+                for hook in &inspection.missing {
+                    print_line(&format!("  missing: {hook}"))?;
+                }
+                for hook in &inspection.unexpected {
+                    print_line(&format!("  unexpected: {hook}"))?;
+                }
+                print_line("  run `remi-hook setup` to fix")?;
+            }
+        },
+    }
+
+    if problems == 0 {
+        Ok(())
+    } else {
+        Err(Error::CheckFailed(problems))
+    }
 }
 
-fn setup(_args: SetupArgs) -> Result<(), Error> {
-    Err(Error::NotImplemented("setup"))
+fn setup(args: SetupArgs, env: &Env) -> Result<(), Error> {
+    if args.forward.is_some() {
+        return Err(Error::NotImplemented("setup --forward"));
+    }
+    match args.harness {
+        Harness::ClaudeCode => {}
+        Harness::OpenCode => return Err(Error::NotImplemented("setup --harness opencode")),
+    }
+    let exe = env.exe.as_deref().ok_or(Error::NoExePath)?;
+
+    let edit = setup::claude::install(&env.claude_settings, exe)?;
+    match &edit.saved {
+        Saved::Unchanged => print_line(&format!(
+            "claude-code: already set up in {}",
+            edit.path.display()
+        ))?,
+        Saved::Written { backup } => {
+            print_line(&format!(
+                "claude-code: wrote {} hooks to {}, running {}",
+                edit.added,
+                edit.path.display(),
+                exe.display()
+            ))?;
+            if edit.removed > 0 {
+                print_line(&format!("  replaced {} earlier remi hooks", edit.removed))?;
+            }
+            if let Some(backup) = backup {
+                print_line(&format!(
+                    "  previous settings saved as {}",
+                    backup.display()
+                ))?;
+            }
+        }
+    }
+
+    if args.check {
+        check(env)?;
+    }
+    Ok(())
 }
 
-fn uninstall(_purge: bool) -> Result<(), Error> {
-    Err(Error::NotImplemented("uninstall"))
+fn uninstall(purge: bool, env: &Env) -> Result<(), Error> {
+    if purge {
+        return Err(Error::NotImplemented("uninstall --purge"));
+    }
+
+    let edit = setup::claude::uninstall(&env.claude_settings)?;
+    match &edit.saved {
+        Saved::Unchanged => print_line(&format!(
+            "claude-code: no remi hooks in {}",
+            edit.path.display()
+        )),
+        Saved::Written { backup } => {
+            print_line(&format!(
+                "claude-code: removed {} remi hooks from {}",
+                edit.removed,
+                edit.path.display()
+            ))?;
+            if let Some(backup) = backup {
+                print_line(&format!(
+                    "  previous settings saved as {}",
+                    backup.display()
+                ))?;
+            }
+            Ok(())
+        }
+    }
 }
 
-/// Writes `records` to stdout as one JSON array on a line of its own, flushed straight away so
-/// a reader at the other end of a pipe sees it immediately.
+/// Writes `records` to stdout as one JSON array on a line of its own.
 fn print_records(records: &[SessionRecord]) -> Result<(), Error> {
-    let json = serde_json::to_string(records).expect("session records always serialize");
+    print_line(&serde_json::to_string(records).expect("session records always serialize"))
+}
+
+/// Writes `line` to stdout, flushed straight away so a reader at the other end of a pipe sees
+/// it immediately.
+fn print_line(line: &str) -> Result<(), Error> {
     let mut stdout = io::stdout().lock();
-    writeln!(stdout, "{json}")
+    writeln!(stdout, "{line}")
         .and_then(|()| stdout.flush())
         .map_err(Error::Stdout)
 }

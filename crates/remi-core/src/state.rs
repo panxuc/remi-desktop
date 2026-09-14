@@ -10,6 +10,8 @@ pub enum PetState {
     Viewing,
     /// Changing files.
     Writing,
+    /// Writing its reply to the user.
+    Replying,
     /// Blocked on the user approving something or answering a question.
     WaitingForInput,
     /// Just finished a turn; the pet fades this to idle after a few seconds.

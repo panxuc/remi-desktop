@@ -23,6 +23,9 @@ pub enum Signal {
     ReadStart,
     /// The agent called a tool that changes files.
     EditStart,
+    /// Reply text from the agent is appearing for the user. A harness may send this for every
+    /// piece of a reply as it streams, so it repeats while one reply is being written.
+    Reply,
     /// A tool call finished, whether or not it succeeded.
     ToolEnd,
     /// The agent is blocked on the user approving something or answering a question.
@@ -56,6 +59,9 @@ impl Signal {
             Signal::TurnStart => (PetState::Thinking, None),
             Signal::ReadStart => (PetState::Viewing, None),
             Signal::EditStart => (PetState::Writing, None),
+            // Text reaching the user also means a prompt the user just denied is over, since no
+            // harness reports a denial.
+            Signal::Reply => (PetState::Replying, None),
             // A tool that has finished is never still being read or written, even if a prompt
             // held it up: the agent is deciding what to do next. This is also what clears the
             // prompt on harnesses that never report the answer.
@@ -188,6 +194,7 @@ mod tests {
             (None, TurnStart, (Thinking, None)),
             (None, ReadStart, (Viewing, None)),
             (None, EditStart, (Writing, None)),
+            (None, Reply, (Replying, None)),
             (None, ToolEnd, (Thinking, None)),
             (None, ApprovalAsked, (WaitingForInput, None)),
             (None, ApprovalAnswered, (Thinking, None)),
@@ -211,6 +218,7 @@ mod tests {
             (waiting_from_writing, ToolEnd, (Thinking, None)),
             (waiting_from_writing, TurnStart, (Thinking, None)),
             (waiting_from_writing, ReadStart, (Viewing, None)),
+            (waiting_from_writing, Reply, (Replying, None)),
             (waiting_from_writing, TurnEnd, (Proud, None)),
         ];
         for (previous, signal, expected) in cases {
@@ -246,6 +254,27 @@ mod tests {
         assert_eq!(
             poses(&[TurnStart, EditStart, ApprovalAsked, ToolEnd, TurnEnd]),
             [Thinking, Writing, WaitingForInput, Thinking, Proud]
+        );
+    }
+
+    #[test]
+    fn a_reply_streams_between_tools_and_ends_the_turn() {
+        assert_eq!(
+            poses(&[
+                TurnStart, Reply, Reply, ReadStart, ToolEnd, Reply, Reply, TurnEnd
+            ]),
+            [
+                Thinking, Replying, Replying, Viewing, Thinking, Replying, Replying, Proud
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reply_clears_a_prompt_the_user_denied() {
+        // No harness reports a denial; the agent answering the user is the first sign of it.
+        assert_eq!(
+            poses(&[EditStart, ApprovalAsked, Reply]),
+            [Writing, WaitingForInput, Replying]
         );
     }
 
