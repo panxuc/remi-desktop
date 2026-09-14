@@ -1,0 +1,4 @@
+# Tauri: generated capability schemas
+gen/
+# Tauri: assets staged by build.rs (plan §5.5), never edited by hand
+ui/assets/

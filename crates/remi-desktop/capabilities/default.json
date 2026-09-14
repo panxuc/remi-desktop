@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The pet window. `core:window:allow-start-dragging` is listed explicitly because core:window:default is read-only window info and does NOT grant it — without it `data-tauri-drag-region` is silently denied and Remi cannot be moved.",
+  "windows": ["pet"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging"
+  ]
+}
