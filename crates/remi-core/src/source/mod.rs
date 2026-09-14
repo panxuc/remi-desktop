@@ -3,6 +3,8 @@
 //! here.
 
 pub mod local;
+pub mod ssh;
+pub mod ssh_config;
 
 use std::fmt;
 
@@ -45,6 +47,13 @@ pub enum SessionUpdate {
     Snapshot(Vec<SessionRecord>),
     /// The connection is working.
     ConnectionUp,
+    /// The source is trying to reach the connection, and has not heard from it yet. Sent before
+    /// every attempt, including a retry, so a host that is slow to answer says so.
+    Connecting,
     /// The connection failed and the source is retrying. What it heard before is kept.
     ConnectionLost { reason: String },
+    /// The user closed the connection, and nobody is retrying it. Unlike
+    /// [`SessionUpdate::ConnectionLost`], what it reported is not merely unconfirmed but no
+    /// longer known at all, so its sessions go rather than staying with their last pose.
+    Disconnected,
 }

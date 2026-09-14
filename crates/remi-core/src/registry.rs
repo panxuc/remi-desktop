@@ -63,6 +63,12 @@ pub enum Selection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Up,
+    /// Known about, but nobody is listening to it: a host the user has not connected to, or one
+    /// they have disconnected. It has no sessions, because the pet knows nothing about a machine
+    /// it is not connected to — not that nothing is happening there.
+    Disconnected,
+    /// Its source is trying to reach it and has not heard back yet.
+    Connecting,
     /// Its source is retrying. Sessions heard before stay listed with their last pose.
     Lost {
         reason: String,
@@ -126,6 +132,8 @@ impl Registry {
             SessionUpdate::ConnectionLost { reason } => ConnectionStatus::Lost {
                 reason: reason.clone(),
             },
+            SessionUpdate::Connecting => ConnectionStatus::Connecting,
+            SessionUpdate::Disconnected => ConnectionStatus::Disconnected,
             // Anything else a connection delivers shows it is working.
             _ => ConnectionStatus::Up,
         };
@@ -172,7 +180,17 @@ impl Registry {
                     }
                 }
             }
-            SessionUpdate::ConnectionUp | SessionUpdate::ConnectionLost { .. } => {}
+            // Closing a connection forgets its sessions outright, rather than letting them fade
+            // out as ended ones do: they have not ended, and the honest thing to show for a
+            // machine nobody is listening to is nothing at all. A pin on one of them is kept —
+            // the registry already falls back to Auto for a session it has never heard of — so
+            // reconnecting brings the selection back with it.
+            SessionUpdate::Disconnected => {
+                self.sessions.retain(|key, _| key.connection != connection)
+            }
+            SessionUpdate::ConnectionUp
+            | SessionUpdate::Connecting
+            | SessionUpdate::ConnectionLost { .. } => {}
         }
 
         // Ended sessions that nothing shows any more are dropped, so they don't pile up in a
@@ -180,6 +198,15 @@ impl Registry {
         let selection = &self.selection;
         self.sessions
             .retain(|key, stored| stored.is_shown(key, selection, now));
+    }
+
+    /// Lists a connection the pet could use but is not listening to, so the menu can offer it.
+    /// A connection that is already known keeps whatever status it has, so this can be called
+    /// with the same list at any time.
+    pub fn declare(&mut self, connection: ConnectionId) {
+        self.connections
+            .entry(connection)
+            .or_insert(ConnectionStatus::Disconnected);
     }
 
     /// Changes which session Remi shows. An ended session that is no longer pinned disappears
@@ -804,6 +831,123 @@ mod tests {
         assert_eq!(
             registry.menu(later)[0].harnesses[0].sessions[0].pose,
             Thinking
+        );
+    }
+
+    #[test]
+    fn a_declared_connection_is_offered_without_being_listened_to() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+
+        registry.declare(ConnectionId::new("theresa"));
+
+        let menu = registry.menu(now);
+        assert_eq!(menu[0].connection, ConnectionId::new("theresa"));
+        assert_eq!(menu[0].status, ConnectionStatus::Disconnected);
+        assert!(menu[0].harnesses.is_empty());
+    }
+
+    #[test]
+    fn declaring_a_connection_again_does_not_disturb_a_live_one() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        upsert(
+            &mut registry,
+            "theresa",
+            record("claude-code", "s1", Writing, 100),
+            now,
+        );
+
+        // Rediscovering the same host in ~/.ssh/config must not unsay what it is doing.
+        registry.declare(ConnectionId::new("theresa"));
+
+        let menu = registry.menu(now);
+        assert_eq!(menu[0].status, ConnectionStatus::Up);
+        assert_eq!(menu[0].harnesses[0].sessions[0].pose, Writing);
+    }
+
+    #[test]
+    fn connecting_is_not_yet_a_connection() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+
+        registry.apply(ConnectionId::new("theresa"), SessionUpdate::Connecting, now);
+
+        assert_eq!(registry.menu(now)[0].status, ConnectionStatus::Connecting);
+    }
+
+    #[test]
+    fn disconnecting_forgets_that_connection_alone() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        upsert(
+            &mut registry,
+            "theresa",
+            record("claude-code", "remote", Writing, 200),
+            now,
+        );
+        upsert(
+            &mut registry,
+            "local",
+            record("claude-code", "here", Thinking, 100),
+            now,
+        );
+
+        registry.apply(
+            ConnectionId::new("theresa"),
+            SessionUpdate::Disconnected,
+            now,
+        );
+
+        // The host stays in the menu — it is still somewhere the user can connect to — but with
+        // nothing under it, because a machine nobody is listening to is not a quiet machine.
+        assert_eq!(
+            menu_shape(&registry, now),
+            [
+                (
+                    "local".into(),
+                    vec![("claude-code".into(), vec!["here".into()])]
+                ),
+                ("theresa".into(), vec![]),
+            ]
+        );
+        assert_eq!(registry.menu(now)[1].status, ConnectionStatus::Disconnected);
+        assert_eq!(
+            shown(&registry, now),
+            Some((key("local", "claude-code", "here"), Thinking))
+        );
+    }
+
+    #[test]
+    fn a_pinned_session_comes_back_when_its_host_reconnects() {
+        let mut registry = Registry::default();
+        let now = Instant::now();
+        upsert(
+            &mut registry,
+            "theresa",
+            record("claude-code", "s1", WaitingForInput, 100),
+            now,
+        );
+        registry.select(Selection::Pinned(key("theresa", "claude-code", "s1")));
+
+        registry.apply(
+            ConnectionId::new("theresa"),
+            SessionUpdate::Disconnected,
+            now,
+        );
+        // Nothing to show while nobody is listening, and the pin is not thrown away for it.
+        assert_eq!(shown(&registry, now), None);
+
+        upsert(
+            &mut registry,
+            "theresa",
+            record("claude-code", "s1", Writing, 120),
+            now,
+        );
+
+        assert_eq!(
+            shown(&registry, now),
+            Some((key("theresa", "claude-code", "s1"), Writing))
         );
     }
 
