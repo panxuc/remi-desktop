@@ -7,6 +7,14 @@ edition.workspace = true
 remi-core = { path = "../remi-core" }
 tauri = { version = "2.11.5", features = ["macos-private-api"] }
 
+directories.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# Only this crate reads config.toml, so `toml` stays local rather than hoisted to the workspace.
+toml = "1.1.6"
+
 [build-dependencies]
 tauri-build = "2.6.3"
 
