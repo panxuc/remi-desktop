@@ -5,15 +5,12 @@
 //! `rusty_spine`, so what you see is what a real runtime would draw -- no
 //! hand-rolled skinning to distrust.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 
 use macroquad::prelude::*;
 use rusty_spine::controller::SkeletonController;
-use rusty_spine::{Atlas, Physics, SkeletonJson};
-
-/// Stashed on each atlas page so `attachment_renderer_object` can hand it back.
-struct SpineTex(Texture2D);
+use rusty_spine::Physics;
+use spine_viewer::{SpineTex, load};
 
 /// Backgrounds worth checking the art against. The pet window is transparent, so
 /// the checker and the magenta are the ones that expose bad alpha edges.
@@ -32,26 +29,6 @@ fn window_conf() -> Conf {
         high_dpi: true,
         ..Default::default()
     }
-}
-
-/// Find the `.atlas` and `.json` in `dir` so we don't hardcode the Chinese filename.
-fn find_assets(dir: &Path) -> (PathBuf, PathBuf) {
-    let (mut atlas, mut json) = (None, None);
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
-    for entry in entries.flatten() {
-        let path = entry.path();
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("atlas") => atlas = Some(path),
-            // `.json` is the skeleton; there is no other json in that folder.
-            Some("json") => json = Some(path),
-            _ => {}
-        }
-    }
-    (
-        atlas.expect("no .atlas file found"),
-        json.expect("no .json skeleton found"),
-    )
 }
 
 fn draw_checker(cell: f32) {
@@ -75,38 +52,9 @@ async fn main() {
         .nth(1)
         .unwrap_or_else(|| "../../assets/spine-asset".to_owned());
     let dir = PathBuf::from(dir);
-    let (atlas_path, json_path) = find_assets(&dir);
-
-    // The C runtime asks us to load textures; hand it a macroquad texture.
-    rusty_spine::extension::set_create_texture_cb(|page, path| {
-        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("texture {path}: {e}"));
-        let tex = Texture2D::from_file_with_format(&bytes, None);
-        tex.set_filter(FilterMode::Linear);
-        page.renderer_object().set(SpineTex(tex));
-    });
-    rusty_spine::extension::set_dispose_texture_cb(|page| unsafe {
-        page.renderer_object().dispose::<SpineTex>();
-    });
-
-    let atlas = Arc::new(Atlas::new_from_file(&atlas_path).expect("failed to load atlas"));
-    let skeleton_data = Arc::new(
-        SkeletonJson::new(atlas)
-            .read_skeleton_data_file(&json_path)
-            .expect("failed to parse skeleton"),
-    );
-
-    // Skip the empty setup pose (`0`) -- it renders nothing and just looks broken.
-    let animations: Vec<(String, f32)> = skeleton_data
-        .animations()
-        .filter(|a| a.duration() > 0.0)
-        .map(|a| (a.name().to_owned(), a.duration()))
-        .collect();
-    assert!(!animations.is_empty(), "skeleton has no animations");
-
-    let mut controller = SkeletonController::new(
-        skeleton_data.clone(),
-        Arc::new(rusty_spine::AnimationStateData::new(skeleton_data)),
-    );
+    // `Linear`: the viewer magnifies hard, where a bilinear tap is what keeps the art from
+    // pixellating. The exporter wants `Nearest` for the opposite reason -- see `load`.
+    let (mut controller, animations) = load(&dir, FilterMode::Linear);
 
     let mut current = 0usize;
     let mut looping = true;
