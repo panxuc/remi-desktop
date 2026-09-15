@@ -99,7 +99,7 @@ impl Store {
         for dir in self.harness_dirs()? {
             for entry in entries(&dir)? {
                 let path = entry.path();
-                if !path.extension().is_some_and(|ext| ext == "json") {
+                if path.extension().is_none_or(|ext| ext != "json") {
                     continue; // temp files end in `.tmp`
                 }
                 let bytes = match fs::read(&path) {

@@ -19,9 +19,22 @@ const ANIMATION = {
   // near enough to writing that a separate pose would be a distinction without a difference.
   replying: "d",
   waiting_for_input: "e",
-  // A session that ended has nothing to draw, and the loop stops rather than spinning the GPU
-  // on an empty frame.
-  offline: null,
+  // No session running: the same empty-handed rest as `idle`, told apart from it by the grey
+  // `offline` treatment in index.html rather than by a pose of its own.
+  //
+  // ⚠️ Not `null`, and emphatically not `setEmptyAnimation` — the tempting answer for "nothing
+  // to draw", and the bug this replaces. Mixing to an empty animation returns the skeleton to
+  // its *setup* pose, which for this asset is a fully visible Remi standing still: 51 of 199
+  // slots carry a setup attachment, and animation `0` is that pose and is empty. The loop then
+  // stopped exactly as designed and left the still frame on screen for as long as no session
+  // was running.
+  //
+  // Drawing nothing at all was the plan's intent (§5.3) and is the only version that costs no
+  // GPU, but there is no tray yet (`menu.rs`), so the session menu is reachable only by
+  // right-clicking Remi — a pet that fades out is a pet with no way back. Resting is the trade,
+  // and it costs the plan's other loop mitigation: Offline animates, so the loop no longer
+  // stops for it and `visibilitychange` is the one left.
+  offline: "a",
 };
 
 /// Seconds of cross-fade between two poses. Spine's `AnimationState` blends bone-for-bone, which
@@ -94,13 +107,11 @@ export function setState(petState, opts = {}) {
   currentState = petState;
   start();
 
+  // A state this renderer does not know: keep whatever is playing rather than blanking her.
+  // Every state the pet sends has an animation, so this is only reachable from a pet newer than
+  // the webview it is serving.
   const name = ANIMATION[petState];
-  if (!name) {
-    // Offline, or a state this renderer does not know. Empty the track so the last pose fades
-    // out rather than freezing mid-motion, and let the loop stop once it has.
-    animationState.setEmptyAnimation(0, MIX_SECONDS);
-    return;
-  }
+  if (!name) return;
 
   const entry = animationState.setAnimation(0, name, true);
   // `transition: false` is for the first pose after mount and for a jump the user should not see
@@ -141,7 +152,6 @@ function measureFit(skeletonData) {
   let maxY = -Infinity;
 
   for (const name of new Set(Object.values(ANIMATION))) {
-    if (!name) continue; // offline
     const animation = skeletonData.findAnimation(name);
     // A rename in a re-exported asset should fail here, at load, and not as a state that silently
     // never plays.
@@ -247,8 +257,4 @@ function frame(now) {
   // is exactly what the `premultipliedAlpha: true` canvas hands the compositor.
   renderer.drawSkeleton(skeleton, false);
   renderer.end();
-
-  // Once the empty animation has finished mixing out there is nothing left to draw, so Offline
-  // costs no GPU at all until a state arrives.
-  if (!ANIMATION[currentState] && !animationState.tracks[0]) stop();
 }

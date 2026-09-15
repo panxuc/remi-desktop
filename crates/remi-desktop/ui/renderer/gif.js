@@ -20,7 +20,9 @@ const GIF = {
   // Matching the Spine map: `07` is the with-pen variant and `06` the empty-handed one.
   viewing: "07view-with-pen.gif",
   idle: "06view.gif",
-  offline: null,
+  // Matching the Spine map again: offline is the same rest as idle, greyed by index.html rather
+  // than by a file of its own.
+  offline: "06view.gif",
 };
 
 let img = null;

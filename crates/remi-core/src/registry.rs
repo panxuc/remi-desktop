@@ -211,6 +211,19 @@ impl Registry {
             .or_insert(ConnectionStatus::Disconnected);
     }
 
+    /// What one connection is doing — for a caller that has a session in hand and needs to know
+    /// whether what it says is still being heard. The menu reads this off [`Registry::menu`];
+    /// this is the same fact asked about a single connection.
+    ///
+    /// A connection nobody has declared is [`ConnectionStatus::Disconnected`]: the pet is
+    /// certainly not listening to a machine it has never been told about.
+    pub fn status(&self, connection: &ConnectionId) -> ConnectionStatus {
+        self.connections
+            .get(connection)
+            .cloned()
+            .unwrap_or(ConnectionStatus::Disconnected)
+    }
+
     /// Changes which session Remi shows. An ended session that is no longer pinned disappears
     /// once its [`ENDED_SHOWN_FOR`] has run out.
     pub fn select(&mut self, selection: Selection) {

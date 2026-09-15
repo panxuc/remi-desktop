@@ -67,25 +67,40 @@ async function boot() {
 
   // Subscribe *before* asking for the current pose. The other order has a gap: a state change
   // landing between the two would be emitted to nobody and then not be in the answer either.
-  await tauri?.event?.listen("pet://state", (event) => apply(event.payload?.state));
+  await tauri?.event?.listen("pet://state", (event) => applyPayload(event.payload));
 
   // Then ask, because Tauri drops events that have no listener yet — the pet's first pose is
   // usually emitted while this page is still parsing, and a late reader must still be able to see
   // the current value.
-  let first = state;
+  let first = null;
   try {
-    const current = await tauri?.core?.invoke("pet_state");
-    if (current?.state) first = current.state;
+    first = await tauri?.core?.invoke("pet_state");
   } catch (err) {
     console.warn("could not read the current pet state:", err);
   }
   // Not blended: there is nothing to blend from.
-  apply(first, { transition: false });
+  applyPayload(first ?? { state }, { transition: false });
 
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("contextmenu", onContextMenu);
-  // Handy from the webview inspector: `__remi.apply("proud")`.
-  window.__remi = { apply, states: STATES, get state() { return state; } };
+  // Handy from the webview inspector: `__remi.apply("proud")`, `__remi.setLive(false)`. The
+  // second is the only way to see the not-live treatment without staging a real connection drop.
+  window.__remi = { apply, setLive, states: STATES, get state() { return state; } };
+}
+
+/// Everything one `pet://state` carries: the pose, and whether that pose is still being heard.
+/// Rust decides both — this only draws them.
+function applyPayload(payload, opts) {
+  if (!payload) return;
+  setLive(payload.live !== false);
+  apply(payload.state, opts);
+}
+
+/// Grey and dim her while the shown session's connection is not delivering (see index.html). The
+/// default is live, so a payload from a build that predates the field, or none at all, leaves her
+/// in colour rather than accusing a healthy session of being stale.
+function setLive(live) {
+  document.body.dataset.live = live ? "true" : "false";
 }
 
 function apply(next, opts) {
@@ -94,6 +109,10 @@ function apply(next, opts) {
     return;
   }
   state = next;
+  // On the body as well as in the renderer, so a treatment that belongs to *every* renderer can
+  // be a CSS rule rather than a third thing each of them has to remember to do — see the grey
+  // `offline` rule in index.html.
+  document.body.dataset.state = next;
   renderer?.setState(next, opts);
 }
 
@@ -138,6 +157,10 @@ function onKeyDown(event) {
 
 /// A caption, not UI: the window is transparent and always on top, so anything permanent here is
 /// something the user has to look at forever. It fades itself out.
+///
+/// Who Remi is showing is deliberately *not* here. It lives in the session menu, which has the
+/// width for a machine name, a session name and an ssh failure reason side by side — none of which
+/// fit on one line inside a 180 px window without either shrinking Remi or covering her.
 let hideTimer = 0;
 function show(text, ms = 1400) {
   label.textContent = text;

@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use remi_core::record::SessionRecord;
-use remi_core::registry::{ConnectionMenu, Registry, Selection, SessionEntry};
+use remi_core::registry::{ConnectionMenu, ConnectionStatus, Registry, Selection, SessionEntry};
 use remi_core::source::local::StateDirWatch;
 use remi_core::source::{ConnectionId, SessionUpdate, ssh, ssh_config};
 use remi_core::state::PetState;
@@ -40,6 +40,19 @@ const ANSWER_WITHIN: Duration = Duration::from_millis(500);
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct StatePayload {
     pub state: PetState,
+    /// Whether the pose above is what is happening *now*, rather than the last thing heard
+    /// before the connection carrying it stopped delivering.
+    ///
+    /// ⚠️ This is emphatically **not** a staleness timeout, which §4 rejected and which would
+    /// turn exactly the waiting pose into idle. It is false only for a silence the pet can
+    /// actually tell apart from an agent that has gone quiet: the connection is
+    /// [`ConnectionStatus::Lost`] or reconnecting, which is a fact the source reported rather
+    /// than one inferred from a clock. An agent sitting on an approval prompt for an hour over
+    /// a healthy connection stays `true`, because nothing about its pose has stopped being true.
+    ///
+    /// A pet showing no session at all is `true`: it is drawing nothing, so there is no stale
+    /// pose to disown.
+    pub live: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,20 +64,31 @@ pub struct StatePayload {
 impl StatePayload {
     /// Nothing to show is not an error: it is a pet that has heard from no session yet, which
     /// looks exactly like every session having ended.
-    fn of(entry: Option<&SessionEntry>) -> Self {
-        match entry {
-            None => Self {
-                state: PetState::Offline,
-                connection: None,
-                session: None,
-                label: None,
-            },
-            Some(entry) => Self {
-                state: entry.pose,
-                connection: Some(entry.key.connection.to_string()),
-                session: Some(entry.key.session.to_string()),
-                label: Some(entry.label.clone()),
-            },
+    fn nothing() -> Self {
+        Self {
+            state: PetState::Offline,
+            live: true,
+            connection: None,
+            session: None,
+            label: None,
+        }
+    }
+
+    /// What the webview should be showing for the registry as it stands.
+    ///
+    /// Taking the whole registry rather than just the session is what lets this answer the
+    /// liveness question at all: the pose comes from the session, and whether that pose is still
+    /// being heard comes from the connection it arrived on.
+    fn of(registry: &Registry, now: Instant) -> Self {
+        let Some(entry) = registry.current(now) else {
+            return Self::nothing();
+        };
+        Self {
+            state: entry.pose,
+            live: matches!(registry.status(&entry.key.connection), ConnectionStatus::Up),
+            connection: Some(entry.key.connection.to_string()),
+            session: Some(entry.key.session.to_string()),
+            label: Some(entry.label.clone()),
         }
     }
 }
@@ -215,7 +239,7 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
     let (tx, rx) = mpsc::channel();
     let bridge = Bridge {
         tx,
-        latest: Arc::new(Mutex::new(StatePayload::of(None))),
+        latest: Arc::new(Mutex::new(StatePayload::nothing())),
         ssh: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -254,7 +278,7 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
                     Message::Tick => {}
                 }
 
-                let payload = StatePayload::of(registry.current(now).as_ref());
+                let payload = StatePayload::of(&registry, now);
                 if last.as_ref() != Some(&payload) {
                     tracing::debug!(?payload, "pet state changed");
                     // Published before it is emitted, so a webview that asks at exactly this

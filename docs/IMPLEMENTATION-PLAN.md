@@ -604,7 +604,8 @@ pub enum PetState { Thinking, Viewing, Writing, Replying, WaitingForInput, Proud
 Keeping it in the same enum means the renderer has exactly one input type.
 
 A state names what the agent is doing, not which animation plays, so it is not one-to-one with
-the Spine asset. `Replying` has no animation of its own yet, `Offline` has none, and several
+the Spine asset. `Replying` has no animation of its own yet and borrows `Writing`'s, `Offline`
+borrows `Idle`'s and is told apart by being drawn grey, and several
 states may end up sharing one; that mapping is the renderer's (§5.3). The distinction lives in
 the record anyway, because the reducer runs in `remi-hook` on every remote: telling two
 activities apart later would mean upgrading every host, while changing which animation a state
@@ -1123,8 +1124,9 @@ in conflict: the batcher blends colour `(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` and al
 composites. Setting both to the same value is the tempting wrong answer.
 
 The 60 fps loop is real GPU work in an always-on-top window on an 8 GB M2. Mitigations, in
-order: pause the loop when the window is fully occluded or the state is `Offline`; drop to a
-lower tick rate for static-ish states. Battery impact gets **measured** at M2, not argued
+order: pause the loop when the window is fully occluded; drop to a
+lower tick rate for static-ish states. (Pausing on `Offline` was the third, and is gone — see the
+2026-09-15 note in §9.) Battery impact gets **measured** at M2, not argued
 about.
 
 Rust → webview: one Tauri event `pet://state` carrying
@@ -1557,6 +1559,23 @@ mitigation that needs no help from Rust — stop on `visibilitychange`, and stop
 `Offline` has finished fading out. Occlusion-pausing (covered, not hidden) is a Tauri event and is
 the first thing to reach for if it turns out to matter. Revisit after M3, when the pet is actually
 in front of someone all day.
+
+**`Offline` draws a resting Remi, greyed — it does not draw nothing, 2026-09-15.** Reported from
+use: ending a Claude Code session left Remi frozen on screen. `renderer/spine.js` handled
+`Offline` with `setEmptyAnimation`, on this document's assumption that an empty track draws
+nothing. It does not: mixing to an empty animation returns the skeleton to its **setup** pose,
+and this asset's setup pose is a fully visible Remi — 51 of 199 slots carry a setup attachment,
+and animation `0` is that pose and is empty. The loop then stopped exactly as specified and left
+the still frame up for as long as no session was running.
+
+Drawing nothing was reachable — fade `skeleton.color.a` to 0 — and was **rejected**, because the
+tray is postponed (§5.2) and the session menu is therefore reachable only by right-clicking Remi:
+a pet that vanishes when the last session ends is a pet with no way back to its own menu. So
+`Offline` plays `a`, the empty-handed rest, and the grey `[data-live="false"]` treatment was
+widened to `[data-state="offline"]` as well — one CSS rule, both renderers, the §5.3 seam still
+three functions. The cost is the loop: `Offline` animates, so it no longer stops for it, and
+`visibilitychange` is the one mitigation left. **Revisit when the tray lands** — with a tray there
+is a way back, and fading out becomes the better answer as well as the cheaper one.
 
 **This closes the stack question.** §0.1 and brief §3's `egui` fallback, and §0.3's
 `renderer/gif.js` fallback, are no longer on the critical path — neither was needed. M2 is

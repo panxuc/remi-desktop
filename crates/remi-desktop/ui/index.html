@@ -15,6 +15,34 @@
     width: 100%;
     height: 100%;
     pointer-events: none;
+    transition: opacity 400ms ease, filter 400ms ease;
+  }
+
+  /* Greyed and dimmed for the two ways nothing is arriving. They look the same on purpose: from
+     across the room the question is only ever "is this happening now", and both answers are no.
+
+     Not live: the connection carrying the shown session has stopped delivering, so the pose on
+     screen is the last thing heard rather than what is happening now. Greyed rather than
+     replaced — the pose is still the honest answer to what that session *was* doing, and the
+     colour is what says it is a memory and not a feed. Rust decides *whether* — `live` in the
+     `pet://state` payload; this only draws it.
+
+     Offline: no session at all, so Remi rests. She is greyed rather than hidden because there is
+     no tray yet (`menu.rs`) and the session menu is reachable only by right-clicking her — a pet
+     that fades out when the last session ends is a pet with no way back.
+
+     Remi keeps moving in both, because grey and moving is more noticeable from across the room
+     than frozen and coloured — and frozen is what this replaces: `offline` used to empty the
+     animation track, which mixes the skeleton to its *setup* pose, a fully visible Remi standing
+     perfectly still.
+
+     Deliberately a rule on whatever the renderer appended rather than anything either renderer
+     does, so both get it for free and the three-function seam (plan §5.3) stays three
+     functions. */
+  body[data-live="false"] > #root > *,
+  body[data-state="offline"] > #root > * {
+    filter: grayscale(1);
+    opacity: 0.45;
   }
 
   /* Debug caption for the M2 state keys. Invisible until something is shown. */
