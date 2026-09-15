@@ -1,0 +1,7 @@
+# Shell scripts are LF in every working copy, whatever `core.autocrlf` says locally.
+#
+# `install.sh` is never run from a checkout — it is piped into `sh` by `curl | sh` and over
+# ssh stdin — so there is no shebang for the OS to reject. Instead the CR at the end of each
+# line becomes part of a shell token: `set -eu` fails as an invalid option, and any path that
+# survives that ends up with a carriage return inside it.
+*.sh text eol=lf

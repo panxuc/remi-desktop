@@ -1669,10 +1669,13 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
    If FSEvents coalescing on macOS adds visible lag at M3, the fix is an optional unix-socket
    poke alongside the write. Measure before adding.
 3. **Windows dev/test machine** — ✅ M6 met 2026-09-15; the first run found the console-window
-   bug above and it is fixed. What remains open is *regression* coverage rather than a first
-   run: the `ssh` source's tests are Unix-only (they drive `sh`), and `CREATE_NO_WINDOW` has no
-   test at all — `Command` exposes no getter for creation flags, so it stays a visual check
-   against a release build. `.github/workflows/ci.yml` now at least runs `cargo test` on a
+   bug above and it is fixed. **The release-build check that `CREATE_NO_WINDOW` actually works
+   was run and passed, 2026-09-15**: spawning `ssh` opened no console window, and the pet took
+   no taskbar button. That was the only verification available for it — `Command` exposes no
+   getter for creation flags, so there is nothing to assert in a test. What remains open is
+   *regression* coverage rather than a first run: the `ssh` source's tests are Unix-only (they
+   drive `sh`), and this check will silently stop being performed the moment nobody remembers
+   to do it by hand. `.github/workflows/ci.yml` now at least runs `cargo test` on a
    Windows runner, which is what keeps the Unix-only gap from widening silently.
 4. **Where Mosquitto runs**, and cert/auth specifics (brief §10). Gates M5 only.
 5. **Do Codex approval requests reach the rollout log?** Unverified — the sampled session ran
