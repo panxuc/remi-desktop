@@ -588,8 +588,12 @@ mod tests {
         let (done, updates) = mpsc::channel();
         thread::spawn(move || {
             let mut seen = Vec::new();
+            // `exec`, like every other script here: stopping kills the child it was handed, so
+            // the child has to *be* the thing holding the pipe. A shell that forks instead
+            // leaves the sleep orphaned with stdout still open, and the read never ends —
+            // which is this test hanging rather than the failure it is meant to catch.
             // Long enough that this test would time out if stopping did not reach the child.
-            watch(shell("sleep 60".to_owned()), &stop, |update| {
+            watch(shell("exec sleep 60".to_owned()), &stop, |update| {
                 seen.push(update)
             });
             let _ = done.send(seen);

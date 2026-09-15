@@ -56,5 +56,9 @@ jobs:
         run: |
           out="$(file target/${{ matrix.target }}/release/remi-hook)"
           echo "$out"
-          echo "$out" | grep -q 'statically linked' \
+          # Two spellings, one meaning. A static *PIE* — which is what the musl targets
+          # produce by default — is reported by `file` as "static-pie linked", not
+          # "statically linked"; both are self-contained, and only "dynamically linked"
+          # would be the regression this guards against.
+          echo "$out" | grep -qE 'statically linked|static-pie linked' \
             || { echo "::error::${{ matrix.target }} remi-hook is not static"; exit 1; }
