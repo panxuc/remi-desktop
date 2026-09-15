@@ -10,7 +10,7 @@ mod window;
 
 use std::sync::{Arc, Mutex};
 
-use tauri::Manager;
+use tauri::{LogicalPosition, Manager};
 
 use crate::bridge::{Bridge, StatePayload};
 use crate::config::{Config, Saver};
@@ -39,9 +39,11 @@ fn pet_state(bridge: tauri::State<'_, Bridge>) -> StatePayload {
 /// popping up a menu from the main thread deadlocks against the event loop it is waiting on
 /// (`menu::popup`). Taking the handle by value rather than `tauri::State` is part of the same
 /// thing — an off-thread command cannot borrow from the request.
+///
+/// `x` and `y` are where the click landed, in logical pixels from the window's top-left.
 #[tauri::command(async)]
-fn context_menu(app: tauri::AppHandle) {
-    menu::popup(&app);
+fn context_menu(app: tauri::AppHandle, x: f64, y: f64) {
+    menu::popup(&app, LogicalPosition::new(x, y));
 }
 
 fn main() {

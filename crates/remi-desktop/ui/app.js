@@ -103,9 +103,14 @@ function apply(next, opts) {
 /// `preventDefault` is what stops the webview's own menu appearing over it. Listening on the
 /// window rather than on #root matters: the renderer's canvas covers the whole page, and while
 /// `pointer-events: none` keeps it out of the way of a drag, nothing should depend on that here.
+///
+/// The click's position goes along because Rust cannot find the cursor itself everywhere: Wayland
+/// gives no app the global pointer position. `clientX`/`clientY` are logical pixels from the
+/// window's top-left, which is what the menu is placed in.
 function onContextMenu(event) {
   event.preventDefault();
-  tauri?.core?.invoke("context_menu").catch((err) => {
+  const at = { x: event.clientX, y: event.clientY };
+  tauri?.core?.invoke("context_menu", at).catch((err) => {
     console.error("could not open the session menu:", err);
   });
 }

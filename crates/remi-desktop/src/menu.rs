@@ -19,7 +19,7 @@ use tauri::menu::{
     CheckMenuItem, CheckMenuItemBuilder, ContextMenu, Menu, MenuBuilder, MenuItem, MenuItemBuilder,
     Submenu, SubmenuBuilder,
 };
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, LogicalPosition, Manager, Wry};
 
 use crate::bridge::{Bridge, MenuSnapshot, Message};
 use crate::config::{Config, Connection, ConnectionKind, NamedSize, Saver, SelectionConfig, Size};
@@ -61,14 +61,20 @@ enum Action {
     Quit,
 }
 
-/// Opens the session menu at the cursor.
+/// Opens the session menu at `at`, a point inside the pet window.
+///
+/// ⚠️ Always with a position, never `popup` and its "wherever the cursor is". On Linux that asks
+/// GTK to anchor the menu to the screen's root window at the global pointer position, and Wayland
+/// has neither: the menu has no parent to attach to, so it is mapped as a window of its own and
+/// the compositor puts it in the middle of the screen. Given a position, the menu is anchored to
+/// the pet window instead, which is what Wayland requires of a popup.
 ///
 /// ⚠️ **Never call this on the main thread.** Creating a menu marshals to the main thread and
 /// blocks until it answers, and on macOS the popup then runs a nested event loop there until the
 /// menu is dismissed — so from the main thread it deadlocks rather than failing. The `context_menu`
 /// command is declared `#[tauri::command(async)]`, which runs it on a worker thread, for exactly
 /// this reason.
-pub fn popup(app: &AppHandle) {
+pub fn popup(app: &AppHandle, at: LogicalPosition<f64>) {
     let Some(pet) = window::pet(app) else {
         return;
     };
@@ -76,7 +82,7 @@ pub fn popup(app: &AppHandle) {
         Ok(menu) => menu,
         Err(err) => return tracing::error!("building the session menu: {err}"),
     };
-    if let Err(err) = menu.popup(pet.as_ref().window()) {
+    if let Err(err) = menu.popup_at(pet.as_ref().window(), at) {
         tracing::error!("opening the session menu: {err}");
     }
 }
