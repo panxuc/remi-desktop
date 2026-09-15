@@ -1,0 +1,164 @@
+# Publishes a release when a `v*` tag is pushed (plan §7).
+#
+# Two halves ship, and they are not the same set of platforms:
+#   * `remi-hook` — the write path. Linux first-class, because the remote is almost always a
+#     headless Linux box; macOS and Windows too, because the pet needs a hook for its own
+#     machine's `local` connection.
+#   * the pet — macOS and Windows. The Linux pet is deferred on Wayland grounds (brief §7).
+#
+# The tag may carry a pre-release suffix (`v0.1.0-beta.1`); the *bundle* version never does.
+# It comes from Cargo.toml, and WiX rejects any pre-release identifier that is not numeric, so
+# a `-beta.1` in the product version would fail the msi build. The tag names the release, the
+# Cargo version names the product.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  hook-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset: remi-hook-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            asset: remi-hook-linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo install cross --locked
+      - run: cross build --release --locked -p remi-hook --target ${{ matrix.target }}
+      - name: assert statically linked
+        run: |
+          out="$(file target/${{ matrix.target }}/release/remi-hook)"
+          echo "$out"
+          echo "$out" | grep -q 'statically linked' \
+            || { echo "::error::${{ matrix.target }} remi-hook is not static"; exit 1; }
+      - run: cp target/${{ matrix.target }}/release/remi-hook ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  # One universal binary rather than two assets: `install.sh` resolves `uname -sm`, and a Mac
+  # that has to pick between two downloads is a Mac that can pick wrong under Rosetta.
+  hook-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - run: |
+          cargo build --release --locked -p remi-hook --target x86_64-apple-darwin
+          cargo build --release --locked -p remi-hook --target aarch64-apple-darwin
+          lipo -create -output remi-hook-macos-universal \
+            target/x86_64-apple-darwin/release/remi-hook \
+            target/aarch64-apple-darwin/release/remi-hook
+          lipo -info remi-hook-macos-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remi-hook-macos-universal
+          path: remi-hook-macos-universal
+
+  hook-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo build --release --locked -p remi-hook
+      - run: copy target\release\remi-hook.exe remi-hook-windows-x86_64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remi-hook-windows-x86_64.exe
+          path: remi-hook-windows-x86_64.exe
+
+  # `--bundles app`, not the config's list, because `tauri.conf.json` also names msi and nsis
+  # for the Windows job. No dmg: it is only a container, and it earns nothing while we are
+  # unsigned — quarantine propagates out of a dmg exactly as it does out of an archive, and the
+  # dmg step drives AppleScript in a headless job, which is the flakiest thing in it (plan §7).
+  pet-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - run: cargo install tauri-cli --version "^2.11" --locked
+      - run: cargo tauri build --target universal-apple-darwin --bundles app
+        working-directory: crates/remi-desktop
+      - name: archive the .app
+        run: |
+          tar -czf "Remi-${GITHUB_REF_NAME}-macos-universal.app.tar.gz" \
+            -C target/universal-apple-darwin/release/bundle/macos Remi.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pet-macos
+          path: Remi-*-macos-universal.app.tar.gz
+
+  pet-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo install tauri-cli --version "^2.11" --locked
+      - run: cargo tauri build --bundles msi,nsis
+        working-directory: crates/remi-desktop
+      - name: collect the installers
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/release/bundle/msi/*.msi "out/Remi-${GITHUB_REF_NAME}-windows-x86_64.msi"
+          cp target/release/bundle/nsis/*.exe "out/Remi-${GITHUB_REF_NAME}-windows-x86_64-setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pet-windows
+          path: out/*
+
+  publish:
+    needs: [hook-linux, hook-macos, hook-windows, pet-macos, pet-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: true
+
+      # `install.sh` is a release asset, not just a file in the repo: it is fetched by
+      # `latest/download/install.sh`, so the copy a user pipes to sh is always the one that
+      # matches the binaries beside it.
+      - name: assemble
+        run: |
+          mkdir -p dist
+          mv staging/* dist/
+          cp install.sh dist/
+          cd dist
+          # The names here are the contract `install.sh` resolves to. Changing one silently
+          # breaks every `curl | sh` against the release.
+          #
+          # Written outside the directory and moved in, so the sums file can never end up
+          # listing (a partially written) itself.
+          sha256sum * > ../SHASUMS256.txt
+          mv ../SHASUMS256.txt .
+          cat SHASUMS256.txt
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Any tag with a hyphen is a pre-release: v0.1.0-beta.1 is, v0.1.0 is not.
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=--prerelease ;;
+            *)   prerelease= ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file .github/RELEASE_NOTES.md \
+            $prerelease

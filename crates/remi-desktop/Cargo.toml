@@ -2,6 +2,7 @@
 name = "remi-desktop"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 remi-core = { path = "../remi-core" }
@@ -16,7 +17,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 toml = "1.1.6"
 
 [build-dependencies]
-tauri-build = "2.6.3"
+tauri-build = { version = "2.6.3", features = [] }
 
 # tauri / tauri-build are added on the Mac — they stay local to this crate, since nothing
 # else in the workspace may depend on them. Keeping remi-core free of any UI crate is what

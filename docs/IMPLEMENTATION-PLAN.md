@@ -1408,9 +1408,17 @@ Two different things get called cleanup here, and only one of them should ever b
 
 ## 7. Building and releasing
 
-Both halves ship from GitHub Actions on a `v*` tag. The repo is public and the artifacts are
-public downloads — `install.sh` is a plain `curl | sh` against a release asset, which only
-works if they are.
+Both halves ship from GitHub Actions on a `v*` tag (`.github/workflows/release.yml`; §12.9
+settled this on 2026-09-15). The repo is public and the artifacts are public downloads —
+`install.sh` is a plain `curl | sh` against a release asset, which only works if they are. That
+premise is what `assets/README.md` still has to clear.
+
+**Asset names are a contract, not a convenience.** `install.sh` resolves `uname -sm` straight
+to `remi-hook-{linux-x86_64,linux-aarch64,macos-universal}` and fetches them through GitHub's
+`releases/latest/download/<name>` alias, so those three names carry no version and renaming one
+silently breaks every `curl | sh` in the field. The GUI bundles do carry the tag in their
+names — nothing resolves them programmatically, and a human downloading one wants to see which
+build it is.
 
 ### What gets built
 
@@ -1420,6 +1428,7 @@ works if they are.
 | `remi-hook` | `x86_64-apple-darwin` + `aarch64-apple-darwin`, `lipo`'d into one universal binary | `macos-14` |
 | `remi-hook` | `x86_64-pc-windows-msvc` | `windows-latest` |
 | `remi-desktop` | universal `.app` in a `.tar.gz`; `.msi` + NSIS `.exe` | `macos-14`, `windows-latest` |
+| `remi-desktop` on Linux | **not shipped.** It compiles and runs there (2026-09-15), but the pet is not a development focus on Linux and brief §7's positioning problem is unaddressed | — |
 | `install.sh` + `SHASUMS256.txt` | — | attached to the release |
 
 `remi-hook` needs the macOS and Windows targets even though remotes are Linux: the pet bundles
@@ -1437,6 +1446,14 @@ the remote is almost always Linux.
 - **`install.sh` defaults to the latest release**, honours `REMI_VERSION` to pin one, and
   honours `REMI_HOOK_BIN=<path>` to install a locally built binary instead of downloading —
   which is what makes M3 and M4 testable before any release exists.
+- **The tag may be a pre-release; the bundle version may not.** `tauri.conf.json` no longer
+  carries a `version` at all — it inherits Cargo's, which stays numeric (`0.1.0`) — because WiX
+  rejects any pre-release identifier that is not itself numeric, so a `-beta.1` in the *product*
+  version fails the msi build outright. `v0.1.0-beta.1` names the release; `0.1.0` names the
+  product. A hyphen in the tag is also what makes the workflow pass `--prerelease`.
+- **`tauri.conf.json` lists `["app", "msi", "nsis"]` on every platform.** The bundler filters
+  package types the host cannot produce rather than erroring on them, so one config serves both
+  runners and neither job needs to know what the other builds.
 - **`remi-hook --version` prints `CARGO_PKG_VERSION`.** Compatibility itself is gated by the
   record-format `v` (§4.2), bumped independently; that is what the skew check in §6.1 reads.
 - **PR builds run `cargo test` + `cargo clippy` on all three crates and build `remi-hook` for
@@ -1485,10 +1502,10 @@ something end-to-end works before any infrastructure exists.
 | **M1** | Transparent, borderless, always-on-top Tauri window on macOS, **with a WebGL canvas compositing in it** | Screenshot: pet over a text editor, no chrome, no black box behind the canvas |
 | **M2** | Spine renderer: all 7 states switchable from a debug key, with blended transitions | Cycling states looks right ✅. Battery measurement **dropped** from the exit criterion — see below |
 | **M3** | `remi-hook signal` + Claude Code adapter + `local` source + session menu, config and window position persist | Run Claude in another terminal on the laptop; pet tracks it. Approve a permission prompt and the waiting pose **clears**. Restart restores position and selection. ✅ |
-| **M4** | `ssh` source against `theresa` | Detach zellij, run Claude on `theresa`, pet tracks it; menu lists both machines' sessions |
+| **M4** | `ssh` source against a real remote | Detach zellij, run Claude on the remote, pet tracks it; menu lists both machines' sessions. ✅ met against `congestion`, 2026-09-15 |
 | **M4b** | CI: a `v*` tag publishes `remi-hook` for all five targets, `install.sh` + `SHASUMS256.txt`, and both GUI bundles | `curl …/install.sh \| sh` on a fresh remote installs, and `remi-hook setup --check` passes there |
 | **M5** | Mosquitto deployed; `mqtt` source + hook forwarder | `mosquitto_sub` sees retained messages; pet tracks `plume` with the ssh source disabled |
-| **M6** | Windows build + validation | M1 and M3 criteria, on Windows |
+| **M6** | Windows build + validation | M1 and M3 criteria, on Windows. ✅ met 2026-09-15 |
 | **M7** | Autostart on login, both platforms | Reboot, pet is there |
 | **M8** | OpenCode adapter (plugin, SSE fallback) | Run OpenCode and Claude Code on the same box; menu lists both, labelled by harness; each drives the right pose |
 
@@ -1504,7 +1521,12 @@ Linux dev box. Session titles are not read yet.
 pose and all. The tray is **postponed**: its whole job is reaching the menu when the pet is
 covered or awkwardly placed, and right-clicking the pet already reaches it.
 
-**M4's code is written, 2026-09-14; it has not been run against a remote yet.**
+**M4 is met, 2026-09-15** — the pet was seen following a real Claude Code session on
+`congestion` over ssh. **M6 is met the same day**: `remi-desktop` was compiled and run on
+Windows and on Linux as well as macOS. The `theresa`/`plume` probing below is superseded —
+`congestion` is the host the transport was actually proven against.
+
+**M4's code was written 2026-09-14**, and the description of it still holds.
 `source/ssh.rs` watches one host — spawn, read a listing per line, explain the failure,
 reconnect with backoff, and stop on demand — with twelve tests that drive it against a local
 `sh` instead of a network. `source/ssh_config.rs` reads the host *names* out of the user's own
@@ -1514,7 +1536,7 @@ with Connect/Disconnect, and the config's `connections` list became "what to sta
 What M4 still owes is the exit criterion: `remi-hook` built and installed on `theresa`, Claude
 Code running there, and the pet seen to follow it.
 
-⚠️ **`plume` is not the M4 host; `theresa` is.** Probed 2026-09-14: `plume` has no zellij, no
+⚠️ **Superseded by the `congestion` run above — kept for the probing method.** Probed 2026-09-14: `plume` has no zellij, no
 node and no rust, while `theresa` has zellij 0.45.1, cargo 1.97.0 and git — so `remi-hook` can
 be built natively *on* it and M4 needs no cross-compilation, no musl toolchain and no
 `install.sh`. Neither machine has Claude Code on it yet. The real ssh invocation was tried
@@ -1646,11 +1668,12 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
 2. **Does the local source need a doorbell socket?** File + `notify` is the v1 answer (§3.1).
    If FSEvents coalescing on macOS adds visible lag at M3, the fix is an optional unix-socket
    poke alongside the write. Measure before adding.
-3. **Windows dev/test machine** — a first run happened 2026-09-15 and found the console-window
-   bug above; sustained availability is still unconfirmed (brief §8), which gates M6. The `ssh`
-   source's tests are Unix-only, for `sh`, so M6 is still their first run on Windows, and
-   `CREATE_NO_WINDOW` has no test at all — `Command` exposes no getter for creation flags, so
-   it is an M6 visual check against a release build.
+3. **Windows dev/test machine** — ✅ M6 met 2026-09-15; the first run found the console-window
+   bug above and it is fixed. What remains open is *regression* coverage rather than a first
+   run: the `ssh` source's tests are Unix-only (they drive `sh`), and `CREATE_NO_WINDOW` has no
+   test at all — `Command` exposes no getter for creation flags, so it stays a visual check
+   against a release build. `.github/workflows/ci.yml` now at least runs `cargo test` on a
+   Windows runner, which is what keeps the Unix-only gap from widening silently.
 4. **Where Mosquitto runs**, and cert/auth specifics (brief §10). Gates M5 only.
 5. **Do Codex approval requests reach the rollout log?** Unverified — the sampled session ran
    a permissive sandbox and was never asked anything (§3.6). Ten-minute experiment when Codex
@@ -1668,10 +1691,16 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
 8. **Does `install.sh` need to handle a non-`~/.local/bin` layout?** It assumes a writable
    `~/.local/bin` and `$HOME`. A remote where that is not true (a locked-down shared box)
    would need `--prefix`. Cheap to add; not worth guessing at before someone hits it.
-9. **Where does the release actually build and publish?** §7 and decision #26 say "public repo,
-   GitHub Actions on a `v*` tag", but `origin` is self-hosted Forgejo/Gitea
-   (`git.unlockableworld.com/unlockable/remi-desktop`). Three options: mirror to a public
-   GitHub repo and keep the §7 matrix verbatim; port it to Forgejo Actions (largely
-   compatible, but the runner images and the release-asset API differ) and host assets there;
-   or build locally and upload by hand until it hurts. `install.sh` hard-codes whichever host
-   wins, so this wants deciding before M4b, not during it. Nothing before M4b is affected.
+9. **Where does the release actually build and publish?** ✅ **Resolved 2026-09-15: GitHub.**
+   The project migrates off self-hosted Forgejo, so §7's matrix applies verbatim —
+   `.github/workflows/release.yml` builds it and `install.sh` resolves
+   `github.com/<owner>/remi-desktop/releases/latest/download/…`.
+
+   The art question behind it is **half** resolved, 2026-09-15. Provenance is now recorded
+   (`assets/README.md`): the character is *Zenless Zone Zero*'s, whose fan-content terms allow
+   non-commercial use, and the GIF/Spine animation is 森哈_Yeah's on bilibili. A non-affiliation
+   disclaimer ships in the repo, the README and the release notes. What is **not** settled is
+   the stated term itself — *仅供个人使用* is personal-use-only, which is stricter than
+   non-commercial, and publishing binaries with the art embedded in them is not personal use by
+   any reading. Ask 森哈_Yeah before the first public release; a "yes, go ahead" in a bilibili
+   reply is worth more than any wording we choose here.

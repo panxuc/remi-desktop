@@ -352,8 +352,9 @@ broker). This section is left as a pointer only so the two files cannot drift.
 ## 10. Open questions ❓
 
 - Where exactly does Mosquitto run, and what auth/TLS setup? (user has domains + home server)
-- ❓ **Which remote gets Claude Code**, and how `remi-hook` gets onto it before the installer of
-  plan §6.1 exists. `theresa` is the candidate and can build it from source itself (§8).
+- ~~Which remote gets Claude Code~~ ✅ Resolved 2026-09-15: **`congestion`**, and the pet was
+  seen following a real session on it over ssh (plan §9, M4). `install.sh` now exists, so the
+  question of getting `remi-hook` onto a host before an installer existed is closed too.
 - Topic scheme final form — is `remi/<host>/state` enough, or does it need per-session
   granularity for multiple concurrent Claude sessions on one host?
 - ~~Click-through vs draggable~~ ✅ Resolved 2026-09-14: **draggable, and click-through is
@@ -363,10 +364,11 @@ broker). This section is left as a pointer only so the two files cannot drift.
 - Window position persistence across restarts.
 - ~~Does the repo get renamed?~~ ✅ Done — it is `remi-desktop`, with `origin` at
   `git.unlockableworld.com/unlockable/remi-desktop`.
-- ❓ **That remote is self-hosted Forgejo/Gitea, but plan §7 and decision #26 specify GitHub
-  Actions and a public GitHub release for `install.sh` + binaries.** Either mirror to GitHub
-  for releases, or port the release matrix to Forgejo Actions and host the assets there.
-  Gates M4b; costs nothing to leave open until then. Recorded as plan §12.8.
+- ~~That remote is self-hosted Forgejo/Gitea, but plan §7 specifies GitHub Actions~~ ✅
+  Resolved 2026-09-15: **the project moves to GitHub**, and plan §7's matrix applies as
+  written. What replaces this question is a harder one — the character art is a third party's
+  (`assets/README.md`), and a public repo plus a downloadable binary both redistribute it.
+  That, not the CI host, is what gates the first public release.
 - Do Codex approval requests reach its rollout log? Unverified, and it decides whether Codex
   can ever show the waiting pose (§12, plan §12).
 

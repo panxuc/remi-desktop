@@ -191,8 +191,12 @@ fn rehome(window: Rect, areas: &[Rect]) -> Option<(i32, i32)> {
     // A window wider than the work area clamps to a negative range; `min` before `max` leaves it
     // at the top-left corner rather than inverted.
     Some((
-        window.x.clamp(target.x, target.x + (target.w - window.w).max(0)),
-        window.y.clamp(target.y, target.y + (target.h - window.h).max(0)),
+        window
+            .x
+            .clamp(target.x, target.x + (target.w - window.w).max(0)),
+        window
+            .y
+            .clamp(target.y, target.y + (target.h - window.h).max(0)),
     ))
 }
 
@@ -271,7 +275,11 @@ mod tests {
     #[test]
     fn a_window_perched_on_the_edge_is_left_alone() {
         assert_eq!(rehome(pet_at(-260, 300), &[BUILTIN]), None, "half off left");
-        assert_eq!(rehome(pet_at(2300, 300), &[BUILTIN]), None, "half off right");
+        assert_eq!(
+            rehome(pet_at(2300, 300), &[BUILTIN]),
+            None,
+            "half off right"
+        );
         // A tenth of an edge showing is not enough to grab.
         assert!(rehome(pet_at(-470, 300), &[BUILTIN]).is_some());
     }

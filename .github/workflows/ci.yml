@@ -1,0 +1,60 @@
+# Checks on every push and pull request. Deliberately does not build the Tauri bundles: those
+# are slow and only a tag needs them (plan §7).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The pet is built and tested on each platform natively, because the things most likely to
+  # break are the platform-specific ones — `source/ssh.rs`'s tests drive a real `sh` and have
+  # never run anywhere but Unix, and `spawn::without_a_window` only exists on Windows.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # webkit2gtk is what `remi-desktop` links against on Linux. Nothing else in the workspace
+      # needs it, but `--workspace` builds the pet too.
+      - name: Linux GUI dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev
+
+      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  # The remote install path rests on `remi-hook` being static — there is no glibc version to
+  # match against an unknown server — and that regresses silently, so it is asserted here
+  # rather than discovered by a user whose distro is older than the runner's.
+  hook-static:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo install cross --locked
+      - run: cross build --release --locked -p remi-hook --target ${{ matrix.target }}
+      # `file`, not `ldd`: ldd cannot read a foreign-architecture binary, and half this matrix
+      # is foreign to the runner.
+      - name: assert statically linked
+        run: |
+          out="$(file target/${{ matrix.target }}/release/remi-hook)"
+          echo "$out"
+          echo "$out" | grep -q 'statically linked' \
+            || { echo "::error::${{ matrix.target }} remi-hook is not static"; exit 1; }
