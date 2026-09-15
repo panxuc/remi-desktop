@@ -77,6 +77,8 @@ impl StatePayload {
 pub struct MenuSnapshot {
     pub connections: Vec<ConnectionMenu>,
     pub selection: Selection,
+    /// The session Remi is showing, so the menu can name the one Follow most recent picked.
+    pub current: Option<SessionEntry>,
 }
 
 /// Anything that can change what Remi shows, plus the one question that only the registry thread
@@ -126,6 +128,7 @@ impl Bridge {
             MenuSnapshot {
                 connections: Vec::new(),
                 selection: Selection::Auto,
+                current: None,
             }
         })
     }
@@ -244,6 +247,7 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
                         let _ = reply.send(MenuSnapshot {
                             connections: registry.menu(now),
                             selection: registry.selection().clone(),
+                            current: registry.current(now),
                         });
                         continue;
                     }

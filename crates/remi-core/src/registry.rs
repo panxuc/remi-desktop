@@ -55,7 +55,9 @@ pub enum Selection {
     Auto,
     /// This session, even after it ends: it then stays, shown as `Offline`, until the user
     /// selects something else. While the pet has never heard of it — say, a pin restored from
-    /// config for a session that ended while the pet was closed — Remi follows Auto.
+    /// config for a session that ended while the pet was closed, or one on a host that is not
+    /// connected — Remi shows `Offline` too, rather than quietly showing some other session: that
+    /// is what tells the user the pin needs replacing.
     Pinned(SessionKey),
 }
 
@@ -183,8 +185,8 @@ impl Registry {
             // Closing a connection forgets its sessions outright, rather than letting them fade
             // out as ended ones do: they have not ended, and the honest thing to show for a
             // machine nobody is listening to is nothing at all. A pin on one of them is kept —
-            // the registry already falls back to Auto for a session it has never heard of — so
-            // reconnecting brings the selection back with it.
+            // Remi shows `Offline` for a pinned session it has not heard of — so reconnecting
+            // brings the selection back with it.
             SessionUpdate::Disconnected => {
                 self.sessions.retain(|key, _| key.connection != connection)
             }
@@ -255,22 +257,20 @@ impl Registry {
     }
 
     /// The session Remi should show, or `None` when there is none, in which case Remi shows
-    /// `Offline`.
+    /// `Offline`. A pinned session the pet has not heard of is none too.
     ///
     /// Auto takes the newest record by its writer's clock rather than by when the pet heard it,
     /// because a source attaching delivers all of its sessions at the same moment. Ties go to
     /// the last session in key order.
     pub fn current(&self, now: Instant) -> Option<SessionEntry> {
-        let pinned = match &self.selection {
-            Selection::Pinned(key) => self.sessions.get_key_value(key),
-            Selection::Auto => None,
-        };
-        let (key, stored) = pinned.or_else(|| {
-            self.sessions
+        let (key, stored) = match &self.selection {
+            Selection::Pinned(key) => self.sessions.get_key_value(key)?,
+            Selection::Auto => self
+                .sessions
                 .iter()
                 .filter(|(key, stored)| stored.is_shown(key, &self.selection, now))
-                .max_by_key(|(_, stored)| stored.record.ts)
-        })?;
+                .max_by_key(|(_, stored)| stored.record.ts)?,
+        };
         Some(stored.entry(key, now))
     }
 }
@@ -1164,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_the_pet_has_not_heard_of_follows_auto_until_it_appears() {
+    fn a_pin_the_pet_has_not_heard_of_shows_nothing_until_it_appears() {
         let mut registry = Registry::default();
         let now = Instant::now();
         upsert(
@@ -1175,10 +1175,8 @@ mod tests {
         );
         registry.select(Selection::Pinned(key("local", "claude-code", "pinned")));
 
-        assert_eq!(
-            shown(&registry, now),
-            Some((key("local", "claude-code", "other"), Writing))
-        );
+        // Not the other session: showing it would hide that the pin points at nothing.
+        assert_eq!(shown(&registry, now), None);
 
         upsert(
             &mut registry,

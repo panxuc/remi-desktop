@@ -107,6 +107,7 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let MenuSnapshot {
         connections,
         selection,
+        current,
     } = app.state::<Bridge>().snapshot();
     let (size, local) = {
         let config = app.state::<Arc<Mutex<Config>>>();
@@ -151,7 +152,17 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     menu = menu.item(&hosts(app, &offered)?);
 
-    let follow = CheckMenuItemBuilder::with_id(FOLLOW, "Follow most recent")
+    // While following, the row names the session it picked. Nothing else in the menu can say so:
+    // a tick on a session row means that session is pinned.
+    let follow_text = match (&selection, &current) {
+        (Selection::Auto, Some(entry)) => format!(
+            "Follow most recent — {} · {}",
+            entry.key.connection,
+            cut(&entry.label, NAME_MAX)
+        ),
+        _ => "Follow most recent".to_owned(),
+    };
+    let follow = CheckMenuItemBuilder::with_id(FOLLOW, follow_text)
         .checked(selection == Selection::Auto)
         .build(app)?;
 

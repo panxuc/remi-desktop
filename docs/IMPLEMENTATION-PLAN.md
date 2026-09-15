@@ -740,8 +740,10 @@ key. It is a deterministic choice, **not** a priority merge — the aggregation 
 §4 removed stays removed, because only ever one session is rendered. When that session ends,
 Auto shows it `Offline` for the same 10 s, then moves on to the next newest. Auto is the default
 so the pet does something sensible before the user has picked anything. A pin the pet has never
-heard of — restored from config for a session that ended while the pet was closed — follows
-Auto until the session appears.
+heard of — restored from config for a session that ended while the pet was closed, or on a host
+that is not connected — shows `Offline` until the session appears (decided 2026-09-15, replacing
+a fallback to Auto): quietly showing some other session would hide that the pin points at nothing,
+and `Offline` tells the user to go back to Auto or pick another.
 
 **The menu** lists connections by name, each one's harnesses by id, and each harness's sessions
 newest first, so rows don't jump around between rebuilds. A connection with no sessions is still
@@ -986,7 +988,7 @@ Right-clicking Remi opens a context menu — the user's model is VS Code's remot
     Connect to a host…                        ▸       Disconnect
         └─ plume · bastion · lab-7                    (every host nobody is watching)
   ─────────────────────────────────────────────
-    Follow most recent                          (Selection::Auto)
+    Follow most recent — local · dotfiles       (Selection::Auto; names the session it follows)
   ─────────────────────────────────────────────
     Size                     ▸  Small · Medium · Large
     Settings…                                   (not built yet)
@@ -1037,10 +1039,12 @@ pet renders one session and only one, and no priority rule exists anywhere in th
 is closed, is the exact thing this project exists to make noticeable.
 
 The selected session is ticked, and clicking a row pins it; **Follow most recent** is ticked
-instead under `Selection::Auto`, and is how the user gets back to it. Selection persists to config
+instead under `Selection::Auto`, and is how the user gets back to it. While ticked it also names
+the session it is following (`Follow most recent — local · dotfiles`), since no session row can
+carry that: a tick there means pinned. Selection persists to config
 as either `auto` or a pinned `(connection, harness, session)`. A pin on a session belonging to a
-machine that is then disconnected is *kept*, not thrown away: the registry already falls back to
-Auto for a session it has never heard of, so reconnecting brings the selection back with it. Size applies immediately — the
+machine that is then disconnected is *kept*, not thrown away: Remi shows `Offline` for a pinned
+session it has not heard of, so reconnecting brings the selection back with it. Size applies immediately — the
 renderer refits itself to whatever the window is — and persists the same way; a hand-written pixel
 count in the config ticks none of the three, which is the truth.
 
@@ -1561,7 +1565,9 @@ idle battery cost.
 
 Later, unsequenced: `tray.rs` (above); Codex adapter (§3.6); a shared source lifecycle, or a
 source trait, once `ssh` and `mqtt` exist (§4.4); installing `remi-hook` to a host from the menu
-(§5.2, §6.1); local IME indicator; phone push on `WaitingForInput`; `remi-agent` with a
+(§5.2, §6.1); returning a Claude Code session to idle after Ctrl+C/Esc, which fires no hook,
+by spotting the `[Request interrupted by user…]` line in its transcript from `StateDirWatch`;
+local IME indicator; phone push on `WaitingForInput`; `remi-agent` with a
 persistent connection for real LWT; `07other-to-view` re-fetch or re-export.
 
 **M8 is deliberately last and deliberately cheap.** It is the test of whether §3.5 actually
