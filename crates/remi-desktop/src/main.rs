@@ -66,6 +66,13 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![renderer, pet_state, context_menu])
         .setup(move |app| {
+            // `LSUIElement` in Info.plist is not enough on its own: tao sets the activation
+            // policy to `Regular` at startup, which overrides the plist key and puts the Dock
+            // icon back. The plist is still worth keeping — it decides how the bundle is
+            // presented *before* this line runs — but this is what actually holds.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             app.manage(config.clone());
             app.manage(saver.clone());
 
