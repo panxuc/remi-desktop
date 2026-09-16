@@ -5,7 +5,7 @@
 # This is the download half of plan §6.1; `remi-hook setup` is the configuration half, and it
 # always runs *on* the machine it configures. Nothing here reaches into a settings file.
 #
-#   curl -fsSL https://github.com/OWNER/remi-desktop/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh | sh
 #   ssh <host> sh -s -- --harness claude-code --check < install.sh
 #
 # Every argument is forwarded verbatim to `remi-hook setup`, so this script never has to learn

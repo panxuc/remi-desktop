@@ -35,7 +35,7 @@ Every machine running an agent — including your laptop — needs `remi-hook`, 
 the agent is doing to a small state file. One command, on that machine:
 
 ```sh
-curl -fsSL https://github.com/OWNER/remi-desktop/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh | sh
 ```
 
 It downloads the right binary for the machine, verifies it against `SHASUMS256.txt`, installs it
