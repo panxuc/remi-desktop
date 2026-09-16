@@ -41,13 +41,17 @@ const ANIMATION = {
 /// is the thing a CSS crossfade between bitmaps structurally cannot do.
 const MIX_SECONDS = 0.25;
 
-/// Fraction of the window kept clear around the fitted skeleton, so physics-driven hair and
-/// ribbons have somewhere to swing without being clipped at the window edge.
+/// Fraction of the window kept clear around the fitted skeleton. The fit itself now runs the
+/// physics (see `measureFit`), so this is no longer what keeps the hair off the window edge —
+/// what it covers is the one thing the fit cannot sample: a cross-fade between two poses, which
+/// blends bones into positions neither animation reaches on its own. Measured over every ordered
+/// pair of poses, the worst of those overshoots the fitted box by 5.4 world units, and 6 % of
+/// the window is about twice that.
 const MARGIN = 0.06;
 
-/// Poses sampled per animation when measuring the framing. 16 is enough to catch the extremes of
-/// a 5 s animation and costs a few milliseconds once, at load.
-const FIT_SAMPLES = 16;
+/// Seconds per step when measuring the framing. Coarser than a frame: the extents come out the
+/// same as at 1/60 to within a tenth of a world unit, for half the work.
+const FIT_STEP_SECONDS = 1 / 30;
 
 /// A backgrounded webview hands back a multi-second `requestAnimationFrame` gap. Feeding that to
 /// the physics solver detonates it, so clamp the step.
@@ -138,12 +142,10 @@ export function dispose() {
 /// The union covers only the animations this renderer plays, not every animation in the file. An
 /// unplayed one can reach well outside the others, and including it would shrink Remi on screen to
 /// make room for a pose nobody ever sees.
+///
+/// Every pose is played through once with the physics solver running, which costs on the order of
+/// a tenth of a second — once, at mount, after an asset load that takes longer.
 function measureFit(skeletonData) {
-  // Its own skeleton, never the one being drawn: posing a skeleton leaves slot attachments behind,
-  // and an animation only resets the slots it keys, so measuring on the render skeleton would leave
-  // it wearing the last sampled pose's attachments into whatever plays first.
-  const skeleton = new spine.Skeleton(skeletonData);
-  const probe = new spine.AnimationState(new spine.AnimationStateData(skeletonData));
   const offset = new spine.Vector2();
   const size = new spine.Vector2();
   let minX = Infinity;
@@ -156,15 +158,30 @@ function measureFit(skeletonData) {
     // A rename in a re-exported asset should fail here, at load, and not as a state that silently
     // never plays.
     if (!animation) throw new Error(`skeleton has no animation "${name}"`);
-    probe.setAnimation(0, name, false);
-    const step = animation.duration / FIT_SAMPLES;
-    for (let i = 0; i < FIT_SAMPLES; i++) {
-      skeleton.setToSetupPose();
-      probe.update(i === 0 ? 0 : step);
+
+    // A skeleton of its own per animation, never the one being drawn, and never shared between
+    // two measurements: posing a skeleton leaves slot attachments behind — an animation only
+    // resets the slots it keys — and it leaves the physics mid-swing, which is state the next
+    // animation would start from and the renderer never would.
+    const skeleton = new spine.Skeleton(skeletonData);
+    const probe = new spine.AnimationState(new spine.AnimationStateData(skeletonData));
+    // Looping, and run for a whole cycle, because that is how the pet plays it: the hair reaches
+    // its extreme on the swing back into the loop point, which a single pass does not contain.
+    probe.setAnimation(0, name, true);
+
+    const steps = Math.ceil(animation.duration / FIT_STEP_SECONDS);
+    for (let i = 0; i <= steps; i++) {
+      const delta = i === 0 ? 0 : FIT_STEP_SECONDS;
+      probe.update(delta);
       probe.apply(skeleton);
-      // `Physics.none` so the measurement is the animation's own extent and not wherever the
-      // hair happened to be swinging on this particular pass.
-      skeleton.updateWorldTransform(spine.Physics.none);
+      // ⚠️ `Physics.update`, stepped, and not `Physics.none` — which is the bug this replaces.
+      // Measuring with the solver frozen gives the pose the animator keyed, and the pet draws
+      // the pose the solver produces: in `d` the hair swings 38 world units further left than
+      // the keyed extent, which is ~13 % of Remi's width, and it was cropped off at the window
+      // edge for the whole of Writing and Replying. Anything physics-driven — hair, ribbons —
+      // has to be measured swinging or the framing does not cover where it actually goes.
+      skeleton.update(delta);
+      skeleton.updateWorldTransform(spine.Physics.update);
       skeleton.getBounds(offset, size);
       if (!(size.x > 0 && size.y > 0)) continue;
       minX = Math.min(minX, offset.x);
