@@ -16,7 +16,7 @@
 | # | Question | Decision | Where |
 |---|---|---|---|
 | 1 | GUI stack | **Tauri v2 + Rust** — ✅ proven at M1, transparent WebGL composites. `egui`/`eframe` fallback unused | brief §3, §11 |
-| 2 | Platforms | **macOS + Windows** for v1. Linux blocked on Wayland, not on toolkit | brief §7 |
+| 2 | Platforms | **macOS + Windows** for v1. Linux is not a priority; on Wayland it needs user-applied KWin rules | brief §7 |
 | 3 | Renderer | **Spine from day one**, not a v1.1 swap — ✅ shipped at M2. `renderer/gif.js` kept behind the same contract, but its art is behind the `gif-fallback` cargo feature and off by default | §5.3, §5.5 |
 | 4 | Frontend tooling | **No build step.** Static files, ES modules, `spine-webgl` vendored. Keeps node out of the Windows build | §5 |
 | 5 | Crates | `remi-core` (UI-free, all the logic) · `remi-desktop` · `remi-hook` | §2 |
@@ -1428,7 +1428,7 @@ build it is.
 | `remi-hook` | `x86_64-apple-darwin` + `aarch64-apple-darwin`, `lipo`'d into one universal binary | `macos-14` |
 | `remi-hook` | `x86_64-pc-windows-msvc` | `windows-latest` |
 | `remi-desktop` | universal `.app` in a `.tar.gz`; `.msi` + NSIS `.exe` | `macos-14`, `windows-latest` |
-| `remi-desktop` on Linux | **not shipped.** It compiles and runs there (2026-09-15), but the pet is not a development focus on Linux and brief §7's positioning problem is unaddressed | — |
+| `remi-desktop` on Linux | **not shipped.** It compiles and runs there (2026-09-15), but the pet is not a development focus on Linux; positioning, stacking and taskbar hiding rely on KWin rules the user applies by hand (brief §7) | — |
 | `install.sh` + `SHASUMS256.txt` | — | attached to the release |
 
 `remi-hook` needs the macOS and Windows targets even though remotes are Linux: the pet bundles

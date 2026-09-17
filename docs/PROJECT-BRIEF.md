@@ -285,10 +285,10 @@ the user from a published `install.sh` for hosts the pet cannot reach. Plan §6.
 
 ---
 
-## 7. Linux — DEFERRED, and why
+## 7. Linux — not a priority, and why
 
-Linux (KDE Plasma) is explicitly **out of scope for v1**. The blocker is not the toolkit, it's
-**Wayland**, and it would hit identically regardless of GUI framework:
+Linux (KDE Plasma) is **not a priority for v1** and gets no release build. The blocker is not
+the toolkit, it's **Wayland**, and it would hit identically regardless of GUI framework:
 
 - Wayland's `xdg-shell` has **no protocol request for a client to set its own position**, by
   design. A pet cannot restore itself to where the user left it.
@@ -296,11 +296,19 @@ Linux (KDE Plasma) is explicitly **out of scope for v1**. The blocker is not the
 - Transparency itself is *fine* — KWin always composites. Only positioning/stacking are blocked.
 - Plasma 6 defaults to Wayland.
 
-If/when Linux is revisited, options in order of preference: ship KWin window rules
-(`Keep Above` + `No titlebar`, matched on window class — what most Linux pets do, user drags
-her once); or `wlr-layer-shell` (KWin implements it, but almost no Rust toolkit exposes it —
-you'd drop to `smithay-client-toolkit`); or target the X11 session (works trivially, but KDE
-is winding X11 down).
+The pet does build and run there. What works today is KWin window rules, applied by the user
+by hand, matched on window class (verified on Plasma 6 Wayland, 2026-09-17):
+
+- `Position` → Remember — KWin restores her to where she was when she closed.
+- `Keep above other windows` → Apply initially, Yes.
+- `Skip taskbar`, `Skip pager`, `Skip switcher` → Apply initially, Yes. Tauri's
+  `skipTaskbar` is an X11 hint that GTK drops on Wayland, so without the rule she shows in the
+  taskbar and Alt+Tab.
+
+If Linux is ever made a real target, the alternatives to asking users for rules: `wlr-layer-shell`
+(KWin implements it, but almost no Rust toolkit exposes it — you'd drop to
+`smithay-client-toolkit`); or running under XWayland with `GDK_BACKEND=x11`, where position,
+stacking and skip-taskbar are client requests again (KDE is winding X11 down, though).
 
 macOS and Windows have none of these problems — both do transparent + always-on-top +
 click-through + arbitrary positioning without complaint.

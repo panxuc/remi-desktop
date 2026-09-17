@@ -22,7 +22,7 @@ Grab the latest release. In short:
 |---|---|
 | macOS 11+ | `Remi-*-macos-universal.app.tar.gz` → `/Applications`, then `xattr -dr com.apple.quarantine /Applications/Remi.app` |
 | Windows 10/11 | `Remi-*-windows-x86_64.msi` or `-setup.exe` |
-| Linux | no pet yet — see below |
+| Linux | not a priority, no release build — see below |
 | any machine running an agent | `curl -fsSL .../releases/latest/download/install.sh \| sh` |
 
 Nothing is code-signed yet, so both platforms will warn on first launch. The release notes carry
@@ -31,12 +31,24 @@ the exact incantations.
 Remi has **no Dock icon and no tray**: right-click her for the session menu — pick a session,
 connect to a host, resize, quit.
 
-### Why there is no Linux pet
+### Linux
 
-Not the toolkit. Wayland's `xdg-shell` has no request for a client to set its own position, by
-design, and a client cannot declare itself always-on-top either — that is compositor policy. A
-pet that cannot restore itself to where you left it is not a pet. `remi-hook` is fully supported
-on Linux, which is where the agent usually runs.
+Linux is not a priority for the pet, and no Linux build is released. It builds and runs, but
+Wayland's `xdg-shell` has no request for a client to set its own position, keep itself above
+other windows, or leave the taskbar — by design, whatever the toolkit. On KDE Plasma the
+compositor can do all of that for her: add a window rule (System Settings → Window Management →
+Window Rules, or focus the pet and press Alt+F3 → More Actions → Configure Special Window
+Settings) matching her window class, with
+
+| property | setting |
+|---|---|
+| Position | Remember |
+| Keep above other windows | Apply initially · Yes |
+| Skip taskbar | Apply initially · Yes |
+| Skip pager | Apply initially · Yes |
+| Skip switcher | Apply initially · Yes |
+
+`remi-hook` is fully supported on Linux, which is where the agent usually runs.
 
 ## How it works
 
