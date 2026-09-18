@@ -48,6 +48,12 @@ Settings) matching her window class, with
 | Skip pager | Apply initially · Yes |
 | Skip switcher | Apply initially · Yes |
 
+The menu bar icon needs `libappindicator` at build and run time —
+`libayatana-appindicator3-dev` on Debian/Ubuntu, `libappindicator-gtk3-devel` on Fedora,
+`libappindicator-gtk3` on Arch. KDE Plasma shows it natively; GNOME needs the AppIndicator
+extension, without which there is no tray at all and the pet's own right-click menu is the only
+way to hers.
+
 `remi-hook` is fully supported on Linux, which is where the agent usually runs.
 
 ## How it works

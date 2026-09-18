@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- The same four-pointed star as `tray.svg`, in the ornament's own colours, for every platform
+       that is not macOS.
+
+       macOS tints a template image to suit the menu bar; Windows and Linux do not — the flag is
+       ignored outside `platform_impl/macos` — so the flat black glyph that is correct there would
+       be a black shape on a dark taskbar everywhere else, which is to say invisible. Carrying both
+       of the ornament's colours is what makes one file work on either: on a dark panel the pale
+       fill draws the star, on a light one the navy outline does.
+
+       Both colours are sampled from A_发饰_b.png rather than chosen: #E0E4E9 is 65% of its opaque
+       pixels and #1B204F is 20%. Its third colour, the white glint, is 2% and far too small to
+       survive at this size, so it is left out.
+
+       The stroke is 1.8 and no thicker on purpose. Windows scales this down to 16px at 100% DPI,
+       and at that size a heavier outline closes over the fill and leaves a navy blob with no star
+       in it. Being centred, it also costs the path half its width: tips sit 8.6 from centre so the
+       painted edge still lands at 9.5, keeping the same 19 extent and 1.5 margin as the template. -->
+  <path d="M 7.560,7.560
+           C 7.560,7.147 9.968,2.400 11.000,2.400
+           C 12.032,2.400 14.440,7.147 14.440,7.560
+           C 14.853,7.560 19.600,9.968 19.600,11.000
+           C 19.600,12.032 14.853,14.440 14.440,14.440
+           C 14.440,14.853 12.032,19.600 11.000,19.600
+           C 9.968,19.600 7.560,14.853 7.560,14.440
+           C 7.147,14.440 2.400,12.032 2.400,11.000
+           C 2.400,9.968 7.147,7.560 7.560,7.560 Z"
+        fill="#E0E4E9" stroke="#1B204F" stroke-width="1.8"/>
+</svg>

@@ -22,7 +22,16 @@ use crate::menu;
 
 /// The glyph, compiled in rather than bundled: a file beside the binary is one more thing to find
 /// at runtime, and to get wrong differently in `cargo run` and in an `.app`.
+///
+/// Two of them, because only macOS tints a tray icon for its bar. There the glyph is flat black
+/// and the system colours it (see [`create`]); everywhere else the same black shape would sit
+/// unaltered on a taskbar that is dark by default on both Windows 11 and Breeze, so those
+/// platforms get the ornament's own pale-fill-and-navy-outline instead, which shows up on a panel
+/// of either shade. `icons/tray/tray-color.svg` explains the colours.
+#[cfg(target_os = "macos")]
 const ICON: &[u8] = include_bytes!("../icons/tray/tray-44.png");
+#[cfg(not(target_os = "macos"))]
+const ICON: &[u8] = include_bytes!("../icons/tray/tray-color-44.png");
 
 /// Named so [`refresh`] can find the tray again without threading a handle through the registry.
 const ID: &str = "remi";
@@ -39,10 +48,12 @@ pub fn create(app: &AppHandle) {
 
     let built = TrayIconBuilder::with_id(ID)
         .icon(icon)
-        // The glyph is one flat black shape on transparency precisely so macOS can do this: as a
-        // template it is tinted to match the bar, which is what makes it correct in light and dark
-        // and dimmed when the bar is inactive. Ignored off macOS, where the PNG is used as-is.
-        .icon_as_template(true)
+        // On macOS the glyph is one flat black shape on transparency precisely so this can be
+        // true: as a template it is tinted to match the bar, correct in light and dark and dimmed
+        // when the bar is inactive. Elsewhere the flag is ignored outright rather than honoured
+        // differently, so it is declared false to match the coloured icon those platforms load —
+        // claiming template of an icon nobody will treat as one only misleads the next reader.
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Remi")
         .build(app);
 
