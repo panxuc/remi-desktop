@@ -6,6 +6,7 @@
 mod bridge;
 mod config;
 mod menu;
+mod tray;
 mod window;
 
 use std::sync::{Arc, Mutex};
@@ -79,9 +80,13 @@ fn main() {
             let bridge = bridge::start(app.handle().clone(), &connections, selection);
             app.manage(bridge);
 
-            // Every menu event in the app arrives here, which is what will let the tray carry the
-            // same menu without carrying a second handler for it.
+            // Every menu event in the app arrives here, which is what lets the tray carry the
+            // same menu without carrying a second handler for it: a click on a tray item and a
+            // click on the pet's own menu are the same event, told apart by nothing.
             app.on_menu_event(|app, event| menu::on_event(app, event.id().as_ref()));
+
+            // After the bridge, since the tray's first menu is built from the registry.
+            tray::create(app.handle());
 
             if let Some(pet) = window::pet(app.handle()) {
                 window::configure(&pet, &config, saver);

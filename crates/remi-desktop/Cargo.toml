@@ -6,7 +6,14 @@ license.workspace = true
 
 [dependencies]
 remi-core = { path = "../remi-core" }
-tauri = { version = "2.11.5", features = ["macos-private-api"] }
+# `tray-icon` is an optional feature rather than part of the default set, so without it listed the
+# whole `tauri::tray` module simply does not exist. `image-png` is what `Image::from_bytes` is
+# gated on, and the menu bar glyph is a PNG.
+tauri = { version = "2.11.5", features = [
+    "macos-private-api",
+    "tray-icon",
+    "image-png",
+] }
 
 directories.workspace = true
 serde.workspace = true

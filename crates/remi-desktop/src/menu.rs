@@ -1,12 +1,18 @@
 //! The session menu: what right-clicking Remi opens.
 //!
 //! It is built fresh on every popup rather than kept and mutated. A native menu cannot change
-//! while it is open, and every row of this one is time-dependent — a pose that fades, and how long
-//! ago the session was last heard from — so a menu older than the click that opened it would be
-//! showing something that is no longer true.
+//! while it is open, so a menu older than the click that opened it would be showing something that
+//! is no longer true.
 //!
 //! Building the menu and acting on a click are separate from where the click came from, because
-//! the tray will carry this identical menu (plan §5.2).
+//! the tray carries this identical menu (`tray.rs`).
+//!
+//! ⚠️ **Nothing in a row may vary continuously.** The right-click menu can afford it — it is built
+//! for the click that opens it — but the tray's cannot: macOS is handed a finished menu and opens
+//! it later without asking us again, so whatever a row said when it was built is what the user
+//! reads. Rows therefore carry only what changes in steps — a pose, and [`STALE_AFTER`] in place
+//! of the exact age they used to show — which is also what lets [`settled`] tell a menu that needs
+//! rebuilding from one that does not.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,6 +42,10 @@ const CONNECT: &str = "connect:";
 const DISCONNECT: &str = "disconnect:";
 const FOLLOW: &str = "follow-newest";
 const SIZE: &str = "size:";
+// Two ids rather than one that toggles: an id says what the user asked for, and a menu built
+// a moment before the click could have been describing a visibility that has since changed.
+const SHOW: &str = "show";
+const HIDE: &str = "hide";
 const QUIT: &str = "quit";
 
 /// Where a session's name is cut. Titles arrive at up to 80 characters, and a menu as wide as that
@@ -58,6 +68,9 @@ enum Action {
     /// Stop watching this machine, and forget it.
     Disconnect(ConnectionId),
     Resize(NamedSize),
+    /// Put the pet away, or bring her back. Reachable from the menu bar either way, which is
+    /// the only reason hiding her is safe to offer at all.
+    Visible(bool),
     Quit,
 }
 
@@ -103,7 +116,7 @@ pub fn popup(app: &AppHandle, at: LogicalPosition<f64>) {
 /// **Everything the pet is *not* watching is one level further in**, under Connect to a host…,
 /// because the top level is for what is happening and a host nobody is connected to is not that.
 /// It is also what stops a `~/.ssh/config` with nine hosts in it burying the sessions.
-fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let MenuSnapshot {
         connections,
         selection,
@@ -180,10 +193,26 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         sizes = sizes.item(&item);
     }
 
+    // Asked of the window, not the config, so the row describes what the user can see. When she
+    // is hidden this is the tray's row alone — there is no pet left to right-click.
+    let shown = window::pet(app).is_none_or(|pet| window::is_shown(&pet));
+    let (visibility, visibility_text) = if shown {
+        (HIDE, "Hide Remi")
+    } else {
+        (SHOW, "Show Remi")
+    };
+
+    // ⚠️ The separator before Quit is a hit target, not decoration. Quit is unusually expensive
+    // here — `LSUIElement` means no Dock icon and no Cmd-Tab entry, so quitting by accident ends
+    // the app with nothing left on screen to say so — while its neighbour, Hide, costs one click
+    // to undo. macOS gives a separator real height, so this buys the row above it a margin that
+    // belongs to neither item.
     menu.separator()
         .item(&follow)
         .separator()
         .item(&sizes.build()?)
+        .text(visibility, visibility_text)
+        .separator()
         .text(QUIT, "Quit Remi")
         .build()
 }
@@ -372,6 +401,7 @@ pub fn on_event(app: &AppHandle, id: &str) {
         Action::Connect(connection) => connect(app, connection),
         Action::Disconnect(connection) => disconnect(app, connection),
         Action::Resize(named) => resize(app, named),
+        Action::Visible(shown) => visible(app, shown),
         // The pet has no window to close and no dock icon, so this is the only way out.
         Action::Quit => app.exit(0),
     }
@@ -435,6 +465,21 @@ fn ssh_host(app: &AppHandle, connection: &ConnectionId) -> String {
 
 /// Resizes the window and remembers the new size. The renderer refits itself to whatever it is
 /// given, so nothing has to be told about this.
+/// Puts the pet away, or brings her back, and remembers which.
+///
+/// ⚠️ The tray is refreshed by hand here. Everything else in the menu is derived from the registry,
+/// so the registry thread's own change check catches it (`bridge.rs`) — but visibility is the
+/// user's, not the registry's, and nothing over there will ever notice it moved. Without this the
+/// menu bar would go on offering Hide for a pet that is already hidden.
+fn visible(app: &AppHandle, shown: bool) {
+    let Some(pet) = window::pet(app) else {
+        return;
+    };
+    window::show(&pet, shown);
+    save(app, |config| config.window.hidden = !shown);
+    crate::tray::refresh(app);
+}
+
 fn resize(app: &AppHandle, named: NamedSize) {
     let size = Size::Named(named);
     save(app, |config| config.size = size);
@@ -461,6 +506,12 @@ fn action(id: &str) -> Option<Action> {
     }
     if id == QUIT {
         return Some(Action::Quit);
+    }
+    if id == SHOW {
+        return Some(Action::Visible(true));
+    }
+    if id == HIDE {
+        return Some(Action::Visible(false));
     }
     // The whole of what follows is the connection's name, which is the user's to choose and so
     // the one part that may hold a `:`.
@@ -499,8 +550,8 @@ fn session_id(key: &SessionKey) -> String {
     )
 }
 
-/// One session's row: which machine it is on, what to call it, what it is doing, and when that was
-/// last true. The last part is what gives away a session that died rather than ended.
+/// One session's row: which machine it is on, what to call it, what it is doing, and — only when
+/// it has stopped adding up — that it has gone quiet. See [`STALE_AFTER`].
 fn row(connection: Option<&ConnectionId>, entry: &SessionEntry, name_harness: bool) -> String {
     let machine = connection.map_or_else(String::new, |connection| format!("{connection} · "));
     let harness = if name_harness {
@@ -508,11 +559,15 @@ fn row(connection: Option<&ConnectionId>, entry: &SessionEntry, name_harness: bo
     } else {
         String::new()
     };
+    let quiet = if is_stale(entry.pose, entry.last_heard) {
+        ", stale"
+    } else {
+        ""
+    };
     format!(
-        "{machine}{name}{harness} — {pose}, {age}",
+        "{machine}{name}{harness} — {pose}{quiet}",
         name = cut(&entry.label, NAME_MAX),
         pose = pose(entry.pose),
-        age = age(entry.last_heard),
     )
 }
 
@@ -539,17 +594,52 @@ fn name_of(size: NamedSize) -> &'static str {
     }
 }
 
-/// Roughly how long ago, at one significant figure. Nothing here is worth a second one: the point
-/// of the number is telling seconds from minutes from hours.
-fn age(since: Duration) -> String {
-    match since.as_secs() {
-        // Under the 1 Hz tick and the coalescing window, so anything smaller would be noise.
-        secs if secs < 5 => "just now".to_owned(),
-        secs if secs < 60 => format!("{secs}s"),
-        secs if secs < 60 * 60 => format!("{}m", secs / 60),
-        secs if secs < 60 * 60 * 24 => format!("{}h", secs / (60 * 60)),
-        secs => format!("{}d", secs / (60 * 60 * 24)),
+/// How long a session that claims to be working may go unheard from before its row says so.
+///
+/// This stands in for the exact age rows used to carry ("writing, 2m"). The tray hands macOS a
+/// finished menu and is never asked again (module docs), so a figure that moves every second would
+/// be wrong for however long that menu sat there, while a marker that flips once and stays put is
+/// as true an hour later as when it was built.
+///
+/// **Only the working poses are judged.** A session at `waiting`, `done` or `idle` is legitimately
+/// silent for as long as the user leaves it alone — marking those would fire on the ordinary case
+/// and teach the user to ignore it. One that claims to be thinking or writing should be producing
+/// updates far more often than this, so past here the likelier story is that it died without ever
+/// writing an end record. That case is the whole reason the age was in the row.
+const STALE_AFTER: Duration = Duration::from_secs(120);
+
+/// Whether a row should admit the session has gone quiet. See [`STALE_AFTER`].
+fn is_stale(pose: PetState, last_heard: Duration) -> bool {
+    let working = matches!(
+        pose,
+        PetState::Thinking | PetState::Viewing | PetState::Writing | PetState::Replying
+    );
+    working && last_heard >= STALE_AFTER
+}
+
+/// The snapshot as the *menu* reads it, with `last_heard` collapsed to the one bit of it a row can
+/// show. Everything else in a snapshot changes only when something happens, so two of these
+/// comparing equal means a freshly built menu would say exactly what the one already on screen
+/// says — which is what lets the tray skip handing macOS a replacement it does not need.
+///
+/// Without this the raw `last_heard` would differ on every tick and the menu would be rebuilt once
+/// a second forever, defeating the point of dropping the age from the row.
+pub fn settled(snapshot: &MenuSnapshot) -> MenuSnapshot {
+    let mut settled = snapshot.clone();
+    let flatten = |entry: &mut SessionEntry| {
+        entry.last_heard = if is_stale(entry.pose, entry.last_heard) {
+            STALE_AFTER
+        } else {
+            Duration::ZERO
+        };
+    };
+    for connection in &mut settled.connections {
+        for harness in &mut connection.harnesses {
+            harness.sessions.iter_mut().for_each(flatten);
+        }
     }
+    settled.current.iter_mut().for_each(flatten);
+    settled
 }
 
 /// Truncates on a character boundary, since titles and ssh errors are both arbitrary UTF-8.
@@ -650,16 +740,43 @@ mod tests {
 
         assert_eq!(
             row(Some(&ConnectionId::new("local")), &entry, false),
-            "local · dotfiles — writing, just now"
+            "local · dotfiles — writing"
         );
         // Inside the machine's own submenu, the row it opened from already said which machine.
-        assert_eq!(row(None, &entry, false), "dotfiles — writing, just now");
+        assert_eq!(row(None, &entry, false), "dotfiles — writing");
+    }
+
+    #[test]
+    fn a_row_admits_a_working_session_has_gone_quiet() {
+        let mut entry = SessionEntry {
+            key: key("theresa", "claude-code", "s1"),
+            label: "dotfiles".into(),
+            pose: PetState::Writing,
+            last_heard: STALE_AFTER,
+            record: remi_core::record::SessionRecord::new(
+                SessionId::new("s1").unwrap(),
+                HarnessId::new("claude-code").unwrap(),
+                PetState::Writing,
+                0,
+            ),
+        };
+        assert_eq!(row(None, &entry, false), "dotfiles — writing, stale");
+
+        // Waiting on the user is not going quiet, however long it lasts — marking it would fire on
+        // the ordinary case rather than on the one worth noticing.
+        entry.pose = PetState::WaitingForInput;
+        entry.last_heard = Duration::from_secs(60 * 60 * 9);
+        assert_eq!(row(None, &entry, false), "dotfiles — waiting");
     }
 
     #[test]
     fn the_fixed_items_parse_and_nothing_else_does() {
         assert!(matches!(action(FOLLOW), Some(Action::Follow)));
         assert!(matches!(action(QUIT), Some(Action::Quit)));
+        // Which way round is in the id, so a click acts on what the row offered rather than on
+        // whatever the pet happens to be doing by the time it lands.
+        assert!(matches!(action(SHOW), Some(Action::Visible(true))));
+        assert!(matches!(action(HIDE), Some(Action::Visible(false))));
         assert!(matches!(
             action("size:large"),
             Some(Action::Resize(NamedSize::Large))
@@ -671,12 +788,15 @@ mod tests {
     }
 
     #[test]
-    fn ages_read_as_one_unit() {
-        assert_eq!(age(Duration::from_secs(2)), "just now");
-        assert_eq!(age(Duration::from_secs(42)), "42s");
-        assert_eq!(age(Duration::from_secs(60 * 4 + 30)), "4m");
-        assert_eq!(age(Duration::from_secs(60 * 60 * 3)), "3h");
-        assert_eq!(age(Duration::from_secs(60 * 60 * 24 * 2)), "2d");
+    fn only_a_working_pose_can_go_stale() {
+        assert!(is_stale(PetState::Writing, STALE_AFTER));
+        assert!(is_stale(PetState::Thinking, STALE_AFTER * 30));
+        // A minute into a long think is not yet worth doubting.
+        assert!(!is_stale(PetState::Writing, STALE_AFTER / 2));
+        // These are silent by their nature, so silence says nothing about them.
+        assert!(!is_stale(PetState::WaitingForInput, STALE_AFTER * 30));
+        assert!(!is_stale(PetState::Idle, STALE_AFTER * 30));
+        assert!(!is_stale(PetState::Offline, STALE_AFTER * 30));
     }
 
     #[test]

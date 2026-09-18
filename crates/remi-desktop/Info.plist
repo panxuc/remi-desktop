@@ -5,10 +5,10 @@
   tauri.conf.json). Only `cargo tauri build` merges it — `cargo run -p remi-desktop` does not,
   so the dev loop always has a Dock icon and the bundle never does.
 
-  LSUIElement: a pet is not an application in the Dock/Cmd-Tab sense. With the tray still
-  postponed (plan §5.2), right-clicking Remi is the only way to her menu — including Quit —
-  so this is the key that makes the bundle behave like a pet rather than an app with a
-  transparent window.
+  LSUIElement: a pet is not an application in the Dock/Cmd-Tab sense. Her menu — including Quit —
+  is reached by right-clicking her or through the menu bar icon (`tray.rs`), neither of which
+  needs a Dock tile, so this is the key that makes the bundle behave like a pet rather than an app
+  with a transparent window.
 
   NSHighResolutionCapable: without it the webview is scaled up from 1x and the Spine art is
   visibly soft on every Mac made in the last decade.

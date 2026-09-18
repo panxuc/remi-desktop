@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- Menu bar glyph: the rounded four-pointed star from Remi's hair ornament
+       (assets/spine-asset/images/A_发饰_b.png), reduced to a single solid shape.
+       Black on transparent so macOS can treat it as a template image and tint it
+       for light/dark menu bars.
+
+       Built as a square core with a lobe on each side: the core is 3.8 half-side
+       (0.40 of the 9.5 tip radius), so the valleys land on its corners at 7.2 and
+       14.8. Each lobe leaves its valley along an axis, bulges gently convex, and
+       comes back to a rounded tip on a perpendicular tangent. Because the two
+       edges meeting at a valley carry one vertical and one horizontal tangent,
+       the valley is an exact 90-degree corner rather than a rounded one; the
+       tips stay smooth. Total extent 19, leaving a 1.5 margin in the 22pt box. -->
+  <path d="M 7.200,7.200
+           C 7.200,6.744 9.860,1.500 11.000,1.500
+           C 12.140,1.500 14.800,6.744 14.800,7.200
+           C 15.256,7.200 20.500,9.860 20.500,11.000
+           C 20.500,12.140 15.256,14.800 14.800,14.800
+           C 14.800,15.256 12.140,20.500 11.000,20.500
+           C 9.860,20.500 7.200,15.256 7.200,14.800
+           C 6.744,14.800 1.500,12.140 1.500,11.000
+           C 1.500,9.860 6.744,7.200 7.200,7.200 Z"
+        fill="black"/>
+</svg>

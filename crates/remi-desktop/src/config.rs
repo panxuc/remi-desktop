@@ -111,6 +111,11 @@ pub struct WindowConfig {
     /// place when the pet is later opened on an external monitor.
     pub x: Option<f64>,
     pub y: Option<f64>,
+    /// Whether the user put the pet away. Remembered like every other preference here, which is
+    /// only safe because the menu bar icon outlives it — a hidden pet is still one click from
+    /// being shown again, where before the tray it would have taken its own menu into hiding with
+    /// it, Quit included.
+    pub hidden: bool,
 }
 
 /// `selection = "auto"`, or an inline table naming one session.
@@ -339,6 +344,9 @@ mod tests {
         assert_eq!(config.renderer, Renderer::Spine);
         assert_eq!(config.size, Size::Named(NamedSize::Medium));
         assert_eq!(config.window.x, Some(1620.0));
+        // Absent from the file, as it is from every config written before the menu bar icon
+        // existed: a pet nobody has hidden is shown.
+        assert!(!config.window.hidden);
         assert_eq!(config.selection.to_selection(), Selection::Auto);
         assert_eq!(config.connections.len(), 3);
         // A connection is named after the host unless the file says otherwise.

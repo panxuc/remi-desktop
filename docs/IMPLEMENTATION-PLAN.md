@@ -1146,6 +1146,7 @@ selection = "auto"             # or: selection = { connection = "plume", session
 [window]
 x = 1620
 y = 820
+hidden = false                 # the pet put away; she is still reachable from the menu bar
 
 [[connections]]
 name = "local"

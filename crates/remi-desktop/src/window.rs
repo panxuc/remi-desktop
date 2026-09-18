@@ -13,10 +13,20 @@ use crate::config::{Config, Saver};
 
 /// Applies the configured size and the saved position, then keeps the position current.
 pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Saver) {
-    let (size, position) = {
+    let (size, position, hidden) = {
         let config = config.lock().expect("config mutex poisoned");
-        (config.size.edge(), (config.window.x, config.window.y))
+        (
+            config.size.edge(),
+            (config.window.x, config.window.y),
+            config.window.hidden,
+        )
     };
+
+    // Before anything else, so a pet the user put away does not flash across the screen on every
+    // launch while it is being sized and positioned.
+    if hidden {
+        show(window, false);
+    }
 
     resize(window, size);
 
@@ -40,6 +50,33 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
     rescue(window);
 
     watch_position(window, config.clone(), saver);
+}
+
+/// Whether the pet is on screen. The window is asked rather than the config, because the config
+/// records what to do at the *next* start and the menu has to describe what is true now.
+///
+/// An unreadable answer counts as shown: the menu then offers Hide, and hiding a pet that is
+/// already hidden costs nothing, where offering Show for a pet already on screen is a dead item.
+pub fn is_shown(window: &WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(true)
+}
+
+/// Puts the pet away, or brings her back.
+///
+/// Showing rescues her first. A pet hidden on an external display that was unplugged in the
+/// meantime would otherwise come back to coordinates no remaining display covers — the same way a
+/// pet parked there goes missing across a restart, which is what [`rescue`] exists for. Hiding is
+/// the one gesture after which that can be true without any window event having said so.
+pub fn show(window: &WebviewWindow, shown: bool) {
+    let result = if shown {
+        rescue(window);
+        window.show()
+    } else {
+        window.hide()
+    };
+    if let Err(err) = result {
+        tracing::warn!("setting pet visibility: {err}");
+    }
 }
 
 /// Remi is square and the renderer refits itself to whatever it is given, so one number is the

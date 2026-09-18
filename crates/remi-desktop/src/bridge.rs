@@ -98,6 +98,10 @@ impl StatePayload {
 /// A menu is a still picture — its rows carry each session's pose and how long ago it was heard,
 /// both of which move — so it is built from one snapshot rather than from several questions asked
 /// a moment apart.
+/// `PartialEq` so the tray can tell a snapshot that would build a different menu from one that
+/// would build the same menu again — see [`crate::menu::settled`], which is what makes comparing
+/// two of these mean anything.
+#[derive(Clone, PartialEq)]
 pub struct MenuSnapshot {
     pub connections: Vec<ConnectionMenu>,
     pub selection: Selection,
@@ -252,6 +256,11 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
             // `None` rather than `Offline`, so the first real state is always emitted even when it
             // *is* Offline.
             let mut last: Option<StatePayload> = None;
+            // What the tray's menu currently says. The webview is told about the pet's *pose*,
+            // but the menu shows far more than that — a session can join or leave it, or a
+            // machine's status change, with the pose never moving — so the tray needs a test of
+            // its own rather than riding along on `last`.
+            let mut shown: Option<MenuSnapshot> = None;
 
             for message in rx {
                 let now = Instant::now();
@@ -288,6 +297,26 @@ pub fn start(app: AppHandle, connections: &[Connection], selection: Selection) -
                         tracing::error!("emitting {EVENT}: {err}");
                     }
                     last = Some(payload);
+                }
+
+                // The registry is right here, so the snapshot costs no round trip — unlike
+                // `Bridge::snapshot`, which asks this very thread. `settled` is what keeps this
+                // from firing every tick: without it `last_heard` alone would differ each second
+                // and macOS would be handed a new menu a second for the life of the app.
+                let settled = crate::menu::settled(&MenuSnapshot {
+                    connections: registry.menu(now),
+                    selection: registry.selection().clone(),
+                    current: registry.current(now),
+                });
+                if shown.as_ref() != Some(&settled) {
+                    shown = Some(settled);
+                    // Queued rather than run here: menus are the main thread's, and this is not
+                    // it. Fire-and-forget, so the registry thread never waits on the UI.
+                    let handle = app.clone();
+                    if let Err(err) = app.run_on_main_thread(move || crate::tray::refresh(&handle))
+                    {
+                        tracing::error!("scheduling the menu bar refresh: {err}");
+                    }
                 }
             }
         })
