@@ -52,15 +52,6 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
     watch_position(window, config.clone(), saver);
 }
 
-/// Whether the pet is on screen. The window is asked rather than the config, because the config
-/// records what to do at the *next* start and the menu has to describe what is true now.
-///
-/// An unreadable answer counts as shown: the menu then offers Hide, and hiding a pet that is
-/// already hidden costs nothing, where offering Show for a pet already on screen is a dead item.
-pub fn is_shown(window: &WebviewWindow) -> bool {
-    window.is_visible().unwrap_or(true)
-}
-
 /// Puts the pet away, or brings her back.
 ///
 /// Showing rescues her first. A pet hidden on an external display that was unplugged in the

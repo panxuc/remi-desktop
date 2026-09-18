@@ -122,7 +122,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         selection,
         current,
     } = app.state::<Bridge>().snapshot();
-    let (size, local) = {
+    let (size, hidden, local) = {
         let config = app.state::<Arc<Mutex<Config>>>();
         let config = config.lock().expect("config mutex poisoned");
         let local: Vec<String> = config
@@ -131,7 +131,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             .filter(|connection| connection.kind == ConnectionKind::Local)
             .map(|connection| connection.name.clone())
             .collect();
-        (config.size, local)
+        (config.size, config.window.hidden, local)
     };
     let is_local = |connection: &ConnectionMenu| {
         local
@@ -193,13 +193,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         sizes = sizes.item(&item);
     }
 
-    // Asked of the window, not the config, so the row describes what the user can see. When she
-    // is hidden this is the tray's row alone — there is no pet left to right-click.
-    let shown = window::pet(app).is_none_or(|pet| window::is_shown(&pet));
-    let (visibility, visibility_text) = if shown {
-        (HIDE, "Hide Remi")
-    } else {
+    // Taken from the config, which records what the user last asked for, rather than asked of the
+    // window. On Linux a hide or show is only queued for the GTK loop, so the window still gives
+    // the old answer when the tray is rebuilt straight after the click, and the row would need a
+    // second click to flip. When she is hidden this is the tray's row alone — there is no pet
+    // left to right-click.
+    let (visibility, visibility_text) = if hidden {
         (SHOW, "Show Remi")
+    } else {
+        (HIDE, "Hide Remi")
     };
 
     // ⚠️ The separator before Quit is a hit target, not decoration. Quit is unusually expensive
@@ -463,14 +465,13 @@ fn ssh_host(app: &AppHandle, connection: &ConnectionId) -> String {
         .map_or_else(|| connection.to_string(), |it| it.ssh_host().to_owned())
 }
 
-/// Resizes the window and remembers the new size. The renderer refits itself to whatever it is
-/// given, so nothing has to be told about this.
 /// Puts the pet away, or brings her back, and remembers which.
 ///
 /// ⚠️ The tray is refreshed by hand here. Everything else in the menu is derived from the registry,
 /// so the registry thread's own change check catches it (`bridge.rs`) — but visibility is the
 /// user's, not the registry's, and nothing over there will ever notice it moved. Without this the
-/// menu bar would go on offering Hide for a pet that is already hidden.
+/// menu bar would go on offering Hide for a pet that is already hidden. It comes after the save
+/// because the visibility row is read from the config.
 fn visible(app: &AppHandle, shown: bool) {
     let Some(pet) = window::pet(app) else {
         return;
@@ -480,6 +481,8 @@ fn visible(app: &AppHandle, shown: bool) {
     crate::tray::refresh(app);
 }
 
+/// Resizes the window and remembers the new size. The renderer refits itself to whatever it is
+/// given, so nothing has to be told about this.
 fn resize(app: &AppHandle, named: NamedSize) {
     let size = Size::Named(named);
     save(app, |config| config.size = size);
