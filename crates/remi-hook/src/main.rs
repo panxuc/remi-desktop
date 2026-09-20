@@ -511,10 +511,16 @@ fn setup(args: SetupArgs, env: &Env) -> Result<(), Error> {
         }
     }
 
-    if args.harness == Harness::Codex {
-        print_line(
-            "codex: restart Codex and review/trust the Remi hooks with /hooks before they can run; check verifies the file, not Codex trust",
-        )?;
+    match args.harness {
+        Harness::ClaudeCode => {
+            print_line("claude-code: restart Claude Code to load the installed hooks")?;
+        }
+        Harness::Codex => {
+            print_line(
+                "codex: restart Codex and review/trust the Remi hooks with /hooks before they can run; check verifies the file, not Codex trust",
+            )?;
+        }
+        Harness::OpenCode => {}
     }
     if args.check {
         check(args.harness, env)?;

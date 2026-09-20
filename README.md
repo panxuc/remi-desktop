@@ -62,33 +62,41 @@ window, but there is nothing to see. If that happens, install the `-gif-fallback
 instead: the same build plus 8.5 MiB of GIF art the renderer falls back to. The feature is off
 by default, so a local build has no GIF art unless you pass `--features gif-fallback` yourself.
 
-### Codex setup
+### Agent hook setup
 
-On each machine running Codex, install the hook from this checkout and configure it:
+On each machine running an agent, install `remi-hook` and configure every harness you use.
+The release installer requires the harness explicitly:
+
+```sh
+curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh \
+  | sh -s -- --harness claude-code --check
+```
+
+Replace `claude-code` with `codex` for Codex. From a source checkout, install and configure the
+same way:
 
 ```sh
 cargo install --path crates/remi-hook --locked
-~/.cargo/bin/remi-hook setup --harness codex --check
-cargo run -p remi-desktop
+~/.cargo/bin/remi-hook setup --harness claude-code --check
+# or: ~/.cargo/bin/remi-hook setup --harness codex --check
 ```
 
-Setup merges Remi's hooks into `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`),
-preserving your other hooks and a `.bak`. It does not edit `config.toml` or replace `notify`.
-Restart Codex, then use **`/hooks` in the CLI to review and trust the Remi hooks**. This is
-[Codex's hook trust requirement](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks);
-setup/check verify configuration, not runtime trust. Use a Codex version with lifecycle hooks
-(the local integration was developed with CLI 0.155.1); older notify-only versions need updating.
-Desktop/IDE clients must use a Codex runtime that loads these hooks and the same `CODEX_HOME`.
+Claude Code setup merges Remi's hooks into its `settings.json`; restart Claude Code afterwards.
+Codex setup merges into `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) without editing
+`config.toml` or replacing `notify`. Restart Codex, then use **`/hooks` in the CLI to review and
+trust the Remi hooks**, as required by
+[Codex's hook trust flow](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+`check` verifies the file, not that trust decision. Desktop and IDE clients must load the same
+`CODEX_HOME` configuration.
+
+Run setup once per harness when both are installed. Check or remove one harness explicitly:
 
 ```sh
 remi-hook check --harness codex
 remi-hook uninstall --harness codex
 ```
 
-After the next release, the download installer also accepts
-`sh install.sh --harness codex --check`. `--harness` is required everywhere — the CLI and the
-installer both refuse to guess which agent a machine runs — and both adapters can be installed
-together.
+`--harness` is required throughout; Remi does not guess which agent a machine runs.
 
 ## How it works
 
@@ -120,14 +128,7 @@ which harness it came from.
 |---|---|
 | **Claude Code** | supported. `remi-hook setup --harness claude-code` merges Remi's hooks into your `settings.json`, keeping your own hooks and a `.bak`. |
 | **OpenCode** | next. It gets a plugin rather than hooks; the event vocabulary is already the shared one. |
-| **Codex** | supported through lifecycle hooks: `remi-hook setup --harness codex --check`. See [Codex setup](#codex-setup). |
-
-Codex maps `UserPromptSubmit` to thinking, read tools to viewing, `apply_patch` to writing,
-`PermissionRequest` / `request_user_input` to waiting, `PostToolUse` to thinking, `Stop` to
-proud, `Interrupt` to idle, and `SessionEnd` to removal. Shell commands keep the thinking pose:
-their names alone do not tell us whether they read or edit files. Codex does not currently
-provide a reply-stream hook, so its replies keep the preceding pose until `Stop`. Hosted tools
-without lifecycle hooks and work happening before hook installation cannot be observed.
+| **Codex** | supported through lifecycle hooks: `remi-hook setup --harness codex --check`. See [Agent hook setup](#agent-hook-setup). |
 
 Adding a harness should cost one file under `harness/` plus a config variant. If it ever costs
 more than that, the neutral vocabulary is wrong and wants fixing rather than working around.
