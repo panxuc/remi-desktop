@@ -265,6 +265,12 @@ fn main() -> ExitCode {
         }
     };
 
+    // Worked out before `run` takes the command, and printed below whatever it did: the
+    // harness is blocked on this process, and its answer is owed even when nothing was written.
+    let hook_reply = match &cli.command {
+        Command::Signal(args) => harness::Harness::from(args.harness).hook_reply(),
+        _ => None,
+    };
     let harness_path = cli.command.is_harness_path();
     let outcome =
         panic::catch_unwind(move || Env::capture().and_then(|env| run(cli.command, &env)));
@@ -276,6 +282,9 @@ fn main() -> ExitCode {
         }
         Err(_) => false, // the panic hook has already printed the message
     };
+    if let Some(reply) = hook_reply {
+        let _ = print_line(reply);
+    }
     if succeeded || harness_path {
         ExitCode::SUCCESS
     } else {

@@ -9,6 +9,10 @@ use serde::Deserialize;
 use super::{HookInput, normalize};
 use crate::record::SessionId;
 
+/// Claude Code decides on a hook's exit code and reads stdout only from a hook that opts into
+/// answering. Saying nothing is how a hook stays out of the way.
+pub(super) const REPLY: Option<&str> = None;
+
 /// The fields every Claude Code hook payload shares. The rest, such as a tool's input and
 /// output, is ignored.
 #[derive(Deserialize)]

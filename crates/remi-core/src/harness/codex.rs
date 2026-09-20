@@ -13,6 +13,11 @@ use serde::Deserialize;
 use super::{HookInput, normalize};
 use crate::record::SessionId;
 
+/// Codex reads a hook's stdout as that hook's answer and parses it as JSON, so writing nothing
+/// is a parse error inside the agent rather than silence. `{}` is the answer that decides
+/// nothing, which is the only answer a pet is ever allowed to give.
+pub(super) const REPLY: Option<&str> = Some("{}");
+
 /// The fields every Codex hook payload shares. The rest is ignored.
 #[derive(Deserialize)]
 struct Payload {

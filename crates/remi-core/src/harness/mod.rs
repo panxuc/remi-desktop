@@ -34,6 +34,20 @@ impl Harness {
         HarnessId::new(id).expect("built-in harness ids are valid")
     }
 
+    /// What this harness must find on stdout once one of its hooks has run and has nothing to
+    /// say about what the agent should do next. `None` where stdout is not read at all.
+    ///
+    /// The caller prints it whatever the hook did, success or failure: the agent is waiting on
+    /// this hook, and a pet that cannot write a record still must not change what the agent does.
+    pub fn hook_reply(self) -> Option<&'static str> {
+        match self {
+            Harness::ClaudeCode => claude::REPLY,
+            Harness::Codex => codex::REPLY,
+            // Nothing reads a plugin call's stdout; it is not a process the agent waits on.
+            Harness::OpenCode => None,
+        }
+    }
+
     /// Reads what the harness passed on stdin about the session. Empty input is not an error
     /// and gives an empty [`HookInput`], so the hook can be run by hand without any.
     ///
@@ -132,6 +146,15 @@ mod tests {
             Harness::Codex.read_input(&b"bad json"[..]),
             Err(Error::Codex(_))
         ));
+    }
+
+    /// Codex parses a hook's stdout; the other two never read it. Getting this wrong is a
+    /// parse error inside the agent, which is the one thing a pet may never cause.
+    #[test]
+    fn only_codex_is_answered_on_stdout() {
+        assert_eq!(Harness::Codex.hook_reply(), Some("{}"));
+        assert_eq!(Harness::ClaudeCode.hook_reply(), None);
+        assert_eq!(Harness::OpenCode.hook_reply(), None);
     }
 
     #[test]
