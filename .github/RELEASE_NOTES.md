@@ -27,7 +27,9 @@ Remi has no Dock icon. Her session menu is in the **menu bar**, and a **right-cl
 **Linux x86_64** — download `Remi-*-linux-x86_64.deb` or `.AppImage`. Install the deb with
 `sudo apt install ./Remi-*-linux-x86_64.deb`, or `chmod +x` the AppImage and run it. Remi prefers
 X11 / XWayland for position restoration and always-on-top; native Wayland falls back to compositor
-window rules. Linux builds include the GIF fallback. GNOME needs AppIndicator support for the tray.
+window rules. These packages are Spine-only, like the macOS and Windows builds; if the pet never
+appears, WebKitGTK could not composite the WebGL canvas — install the `-gif-fallback` package
+instead. GNOME needs AppIndicator support for the tray.
 
 ## Teach a machine to talk to her
 

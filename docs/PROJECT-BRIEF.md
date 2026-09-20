@@ -303,7 +303,10 @@ rules matching Remi's window class:
 
 GTK 3, WebKitGTK 4.1 and AppIndicator are build/runtime dependencies. Linux initializes the tray
 with its menu already attached; GNOME needs an AppIndicator extension to display it. The pet's
-right-click menu remains available. Linux builds include GIF art for fallback when WebGL fails.
+right-click menu remains available. WebKitGTK does not reliably composite the transparent WebGL
+canvas, so each Linux package ships twice: the default one Spine-only as on macOS and Windows,
+and a `-gif-fallback` one carrying the GIF art for the machines where that fails. The feature
+stays off by default, local Linux builds included.
 See the [README](../README.md#linux) for installation and build commands.
 
 ---

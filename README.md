@@ -53,8 +53,14 @@ matching Remi's window class:
 
 The tray needs AppIndicator (`libayatana-appindicator3-1` on Debian/Ubuntu,
 `libappindicator-gtk3` on Arch). KDE Plasma shows it natively; GNOME needs its AppIndicator
-extension. Right-clicking the pet also opens the menu. Linux builds include GIF assets so a
-failed WebGL renderer can fall back without leaving an invisible pet.
+extension. Right-clicking the pet also opens the menu.
+
+`Remi-*-linux-x86_64.deb` and `.AppImage` are the pet as macOS and Windows ship her: Spine only.
+WebKitGTK does not always composite the transparent WebGL canvas that renderer draws into, and a
+pet that fails that way is invisible rather than merely ugly — she says so in a message on the
+window, but there is nothing to see. If that happens, install the `-gif-fallback` package
+instead: the same build plus 8.5 MiB of GIF art the renderer falls back to. The feature is off
+by default, so a local build has no GIF art unless you pass `--features gif-fallback` yourself.
 
 ### Codex setup
 
@@ -150,7 +156,8 @@ The frontend has **no build step**: static files and ES modules under `crates/re
 with `spine-webgl` vendored. `build.rs` stages the Spine art into `ui/assets/` on every build.
 
 Bundling the app needs the Tauri CLI (`cargo install tauri-cli --version "^2.11"`), then
-`cargo tauri build` from `crates/remi-desktop` (on Linux: `cargo tauri build --bundles deb,appimage`).
+`cargo tauri build` from `crates/remi-desktop` (on Linux, what the release builds:
+`cargo tauri build --bundles deb,appimage --features gif-fallback`).
 On macOS that also merges `Info.plist`, which is
 what makes the bundle Dock-less — `cargo run` never does, so the dev loop always has a Dock icon.
 

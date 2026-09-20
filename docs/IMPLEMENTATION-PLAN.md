@@ -1189,9 +1189,12 @@ not just the filename.
 **The GIF art is behind the `gif-fallback` cargo feature, default off.** Measured 2026-09-14: it is
 8.5 MiB, 26% of the binary, for a render path M1 and M2 between them showed macOS does not need.
 `ui/renderer/gif.js` ships either way — it is 40 lines, and a seam with one implementation is not a
-seam — so turning the feature on is a rebuild, not a port. The case it is still held for is M6:
-WebView2 on DWM is a different compositor path from WKWebView, and it is the one place the
-fallback's original justification is unresolved. Delete both once M6 passes.
+seam — so turning the feature on is a rebuild, not a port. It is still held for the webviews that
+are not WKWebView: WebView2 on DWM at M6, and WebKitGTK now, where the transparent canvas is
+unreliable enough that the release workflow ships a second Linux pair, `-gif-fallback`, beside
+the Spine-only default. That is a flag in CI, not a platform rule in `build.rs`: a Linux
+`cargo build` embeds no more art than a macOS one. Delete both once M6 passes and WebKitGTK
+composites.
 
 Two traps this staging has already hit, neither of which announces itself:
 
@@ -1421,7 +1424,7 @@ build it is.
 | `remi-hook` | `x86_64-apple-darwin` + `aarch64-apple-darwin`, `lipo`'d into one universal binary | `macos-14` |
 | `remi-hook` | `x86_64-pc-windows-msvc` | `windows-latest` |
 | `remi-desktop` | universal `.app` in a `.tar.gz`; `.msi` + NSIS `.exe` | `macos-14`, `windows-latest` |
-| `remi-desktop` on Linux | **x86_64**; X11/XWayland preferred, native Wayland requires compositor rules (brief §7) | `.deb`, `.AppImage` |
+| `remi-desktop` on Linux | **x86_64**; X11/XWayland preferred, native Wayland requires compositor rules (brief §7) | `.deb`, `.AppImage`, each also as `-gif-fallback` carrying the GIF art (§5.5) |
 | `install.sh` + `SHASUMS256.txt` | — | attached to the release |
 
 `remi-hook` needs the macOS and Windows targets even though remotes are Linux: the pet bundles

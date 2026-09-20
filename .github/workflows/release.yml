@@ -104,9 +104,21 @@ jobs:
           name: pet-macos
           path: Remi-*-macos-universal.app.tar.gz
 
+  # Two pairs, same pet. The plain `.deb`/`.AppImage` are the pet as macOS and Windows ship
+  # her: Spine only. WebKitGTK does not always composite the transparent WebGL canvas she draws
+  # into, and that failure is an invisible pet rather than an ugly one, so `-gif-fallback` is
+  # the same build plus the 8.5 MiB of GIF art the renderer falls back to. The feature stays
+  # off by default — this is a flag in CI, not a rule in `build.rs`.
   pet-linux:
     # Build on 22.04 to avoid requiring a newer glibc than supported user systems.
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - build_args: "--features gif-fallback"
+            suffix: "-gif-fallback"
+          - build_args: ""
+            suffix: ""
     steps:
       - uses: actions/checkout@v4
       - name: Linux GUI dependencies
@@ -116,18 +128,21 @@ jobs:
             librsvg2-dev patchelf libxdo-dev
       - run: rustup toolchain install stable --profile minimal
       - run: cargo install tauri-cli --version "^2.11" --locked
-      - run: cargo tauri build --bundles deb,appimage
+      - run: cargo tauri build --bundles deb,appimage ${{ matrix.build_args }}
         working-directory: crates/remi-desktop
         env:
           NO_STRIP: "true"
       - name: collect Linux packages
         run: |
           mkdir -p out
-          cp target/release/bundle/deb/*.deb "out/Remi-${GITHUB_REF_NAME}-linux-x86_64.deb"
-          cp target/release/bundle/appimage/*.AppImage "out/Remi-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
+          cp target/release/bundle/deb/*.deb \
+            "out/Remi-${GITHUB_REF_NAME}-linux-x86_64${{ matrix.suffix }}.deb"
+          cp target/release/bundle/appimage/*.AppImage \
+            "out/Remi-${GITHUB_REF_NAME}-linux-x86_64${{ matrix.suffix }}.AppImage"
       - uses: actions/upload-artifact@v4
         with:
-          name: pet-linux
+          # One artifact name per matrix leg: upload-artifact v4 rejects a repeated name.
+          name: pet-linux${{ matrix.suffix }}
           path: out/*
 
   pet-windows:

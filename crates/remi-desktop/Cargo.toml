@@ -43,7 +43,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [features]
 # Whether the GIF fallback's art is staged into `ui/` and therefore embedded in the binary.
 #
-# Always included on Linux for WebKitGTK/driver compatibility. Elsewhere off by default: it is 8.5 MiB, 26% of the build, for a render path the Spine renderer makes
+# Off by default: it is 8.5 MiB, 26% of the build, for a render path the Spine renderer makes
 # unnecessary wherever a transparent WebGL canvas composites. `ui/renderer/gif.js` itself ships
 # either way — it is 40 lines, and a seam with one implementation is not a seam. This feature is
 # only about the art. Turn it on for a platform whose webview cannot composite that canvas.
