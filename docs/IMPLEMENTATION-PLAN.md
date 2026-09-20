@@ -1228,9 +1228,9 @@ remi-hook signal turn-start --harness opencode --session ses_… --title "…"  
 remi-hook state writing [--session <id>]    # escape hatch: name a pose directly, no reducer
 remi-hook watch                             # the snapshot, then again on every change, until stdin closes (ssh source)
 remi-hook snapshot                          # one JSON array of live records, then exit
-remi-hook check                             # this program's path, the state dir, each harness's hooks; non-zero if anything is wrong
+remi-hook check   --harness claude-code     # this program's path, the state dir, that harness's hooks; non-zero if anything is wrong
 remi-hook setup   --harness claude-code     # add remi's hooks to this machine's harness config; idempotent, keeps a .bak
-remi-hook uninstall                         # remove exactly the hooks setup added
+remi-hook uninstall --harness claude-code   # remove exactly the hooks setup added
 ```
 
 `remi-hook signal <event>` is what harnesses call. It reads stdin only to pick up the session
@@ -1239,7 +1239,9 @@ is a terminal or the harness is OpenCode, whose plugin passes flags and may leav
 applies the reducer from §3.5 —
 which is the only thing in the system that names a pose — and writes the file (§3). `--harness`
 is required: it decides how stdin is read, and `setup` writes it into the harness config so
-nobody types it. `--session` and `--title` override what stdin says; the OpenCode plugin passes
+nobody types it. It is required on `check`, `setup`, `uninstall` and `state` too, and `install.sh`
+refuses to run without it — which agent a machine runs is the one thing none of them may guess,
+and a default would quietly configure or report on the wrong one. `--session` and `--title` override what stdin says; the OpenCode plugin passes
 them, and they make testing by hand easy. The folder name has no flag: it comes from stdin's
 `cwd`, else the directory the hook was started in.
 

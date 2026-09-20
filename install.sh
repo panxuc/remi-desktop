@@ -5,11 +5,13 @@
 # This is the download half of plan §6.1; `remi-hook setup` is the configuration half, and it
 # always runs *on* the machine it configures. Nothing here reaches into a settings file.
 #
-#   curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh | sh
-#   ssh <host> sh -s -- --harness claude-code --check < install.sh
+#   curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh \
+#     | sh -s -- --harness claude-code --check
+#   ssh <host> sh -s -- --harness codex --check < install.sh
 #
 # Every argument is forwarded verbatim to `remi-hook setup`, so this script never has to learn
-# what that command's flags mean. With no arguments it configures Claude Code and runs `check`.
+# what that command's flags mean. `--harness` is one of them and has no default here either:
+# which agent a machine runs is the one thing an installer must not guess.
 #
 # Environment:
 #   REMI_VERSION   release tag to install (default: the latest release)
@@ -126,10 +128,13 @@ say "installed $TARGET"
 
 # ---------------------------------------------------------------- configure
 
+# The binary is in place by now; only the harness configuration is left, and that needs to be
+# told which harness. Saying so is better than configuring the wrong agent silently.
+if [ "$#" -eq 0 ]; then
+    say "installed, but no harness was configured."
+    die "pass --harness claude-code or --harness codex, e.g. \`sh -s -- --harness claude-code --check\`"
+fi
+
 # By absolute path, never by name: `~/.local/bin` is frequently missing from a non-interactive
 # ssh shell's PATH, which is the whole "installed but silent" failure class (plan §6.1).
-if [ "$#" -eq 0 ]; then
-    exec "$TARGET" setup --harness claude-code --check
-else
-    exec "$TARGET" setup "$@"
-fi
+exec "$TARGET" setup "$@"

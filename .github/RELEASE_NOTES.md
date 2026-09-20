@@ -36,13 +36,14 @@ instead. GNOME needs AppIndicator support for the tray.
 Every machine running an agent — including your laptop — needs `remi-hook`, which writes what the agent is doing to a small state file. One command, on that machine:
 
 ```sh
-curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/un-lock-able/remi-desktop/releases/latest/download/install.sh \
+  | sh -s -- --harness claude-code --check
 ```
 
-It downloads the right binary for the machine, verifies it against `SHASUMS256.txt`, installs it to `~/.local/bin/remi-hook`, and configures a harness on it — Claude Code by default, merging into `~/.claude/settings.json` alongside your own hooks and keeping a `.bak`. Pass `--harness <name>` to pick another one. Then it prints what the pet will see. Run it again any time to check:
+It downloads the right binary for the machine, verifies it against `SHASUMS256.txt`, installs it to `~/.local/bin/remi-hook`, and configures the harness you named — for Claude Code, merging into `~/.claude/settings.json` alongside your own hooks and keeping a `.bak`. Then it prints what the pet will see. `--harness` has no default: name `claude-code` or `codex`, and install both on a machine that runs both. Run this any time to check:
 
 ```sh
-~/.local/bin/remi-hook check
+~/.local/bin/remi-hook check --harness claude-code
 ```
 
 For Codex, use `remi-hook setup --harness codex --check`. Restart Codex and review/trust the
@@ -51,7 +52,7 @@ Check with `remi-hook check --harness codex`; remove with `remi-hook uninstall -
 Use a Codex runtime with lifecycle-hook support. Reply streaming and arbitrary shell-command
 classification are not available through this adapter.
 
-To undo Claude Code setup: `remi-hook uninstall`. `--purge` is not implemented.
+To undo Claude Code setup: `remi-hook uninstall --harness claude-code`. `--purge` is not implemented.
 
 ## Known limits in this beta
 

@@ -43,7 +43,7 @@ enum Command {
     /// the selected harness's hooks are in place, and exit non-zero if something is wrong.
     Check {
         /// Harness whose installed hooks should be checked.
-        #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+        #[arg(long, value_enum)]
         harness: Harness,
     },
     /// Add remi's hooks to this machine's harness configuration, running this copy of
@@ -52,7 +52,7 @@ enum Command {
     /// Remove exactly what `setup` added.
     Uninstall {
         /// Harness whose Remi hooks should be removed.
-        #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+        #[arg(long, value_enum)]
         harness: Harness,
         /// Also remove the binary and the state dir.
         #[arg(long)]
@@ -164,7 +164,7 @@ struct StateArgs {
     /// or it is pruned after a day without writes.
     #[arg(long, default_value = "manual")]
     session: String,
-    #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+    #[arg(long, value_enum)]
     harness: Harness,
 }
 
@@ -203,7 +203,7 @@ impl From<Pose> for PetState {
 
 #[derive(Args)]
 struct SetupArgs {
-    #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+    #[arg(long, value_enum)]
     harness: Harness,
     /// MQTT broker to forward records to, e.g. mqtts://host:8883.
     #[arg(long)]

@@ -22,7 +22,7 @@ Grab the latest release. In short:
 | macOS 11+ | `Remi-*-macos-universal.app.tar.gz` → `/Applications`, then `xattr -dr com.apple.quarantine /Applications/Remi.app` |
 | Windows 10/11 | `Remi-*-windows-x86_64.msi` or `-setup.exe` |
 | Linux x86_64 | `Remi-*-linux-x86_64.deb` or `.AppImage` — X11 / XWayland recommended |
-| any machine running an agent | `curl -fsSL .../releases/latest/download/install.sh \| sh` |
+| any machine running an agent | `curl -fsSL .../releases/latest/download/install.sh \| sh -s -- --harness claude-code --check` |
 
 Nothing is code-signed yet, so macOS and Windows will warn on first launch. The release notes carry
 the exact incantations.
@@ -86,8 +86,9 @@ remi-hook uninstall --harness codex
 ```
 
 After the next release, the download installer also accepts
-`sh install.sh --harness codex --check`. Claude Code remains the default when `--harness` is
-omitted, and both adapters can be installed together.
+`sh install.sh --harness codex --check`. `--harness` is required everywhere — the CLI and the
+installer both refuse to guess which agent a machine runs — and both adapters can be installed
+together.
 
 ## How it works
 
