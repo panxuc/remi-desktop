@@ -40,13 +40,20 @@ enum Command {
     /// Print live records as one JSON array, then exit.
     Snapshot,
     /// Verify this machine is set up: print this program's path, the state dir, and whether
-    /// each harness's hooks are in place, and exit non-zero if something is wrong.
-    Check,
+    /// the selected harness's hooks are in place, and exit non-zero if something is wrong.
+    Check {
+        /// Harness whose installed hooks should be checked.
+        #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+        harness: Harness,
+    },
     /// Add remi's hooks to this machine's harness configuration, running this copy of
     /// `remi-hook`. Safe to run again; the previous file is kept as a `.bak`.
     Setup(SetupArgs),
     /// Remove exactly what `setup` added.
     Uninstall {
+        /// Harness whose Remi hooks should be removed.
+        #[arg(long, value_enum, default_value_t = Harness::ClaudeCode)]
+        harness: Harness,
         /// Also remove the binary and the state dir.
         #[arg(long)]
         purge: bool,
@@ -78,10 +85,12 @@ struct SignalArgs {
     title: Option<String>,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Harness {
     /// Claude Code, through hooks in its settings.json.
     ClaudeCode,
+    /// Codex, through lifecycle hooks in hooks.json.
+    Codex,
     /// OpenCode, through a plugin.
     #[value(name = "opencode")]
     OpenCode,
@@ -91,6 +100,7 @@ impl From<Harness> for harness::Harness {
     fn from(arg: Harness) -> Self {
         match arg {
             Harness::ClaudeCode => harness::Harness::ClaudeCode,
+            Harness::Codex => harness::Harness::Codex,
             Harness::OpenCode => harness::Harness::OpenCode,
         }
     }
@@ -123,6 +133,8 @@ enum SignalEvent {
     ApprovalAnswered,
     /// The agent finished its turn. Remi: proud, fading to idle.
     TurnEnd,
+    /// The user interrupted the turn. Remi rests until work resumes.
+    TurnInterrupted,
     /// The session closed. Its record is removed, and the pet shows it offline.
     SessionEnd,
 }
@@ -138,6 +150,7 @@ impl From<SignalEvent> for Signal {
             SignalEvent::ApprovalAsked => Signal::ApprovalAsked,
             SignalEvent::ApprovalAnswered => Signal::ApprovalAnswered,
             SignalEvent::TurnEnd => Signal::TurnEnd,
+            SignalEvent::TurnInterrupted => Signal::TurnInterrupted,
             SignalEvent::SessionEnd => Signal::SessionEnd,
         }
     }
@@ -155,8 +168,7 @@ struct StateArgs {
     harness: Harness,
 }
 
-/// A pose a session record can carry. Idle is not one of them: the pet shows idle on its
-/// own once a session has gone quiet, so nothing ever writes it.
+/// A pose that can be set manually. Interrupted turns also write Idle through the reducer.
 #[derive(Clone, Copy, ValueEnum)]
 enum Pose {
     /// Working out what to do next.
@@ -214,6 +226,7 @@ struct Env {
     exe: Option<PathBuf>,
     /// Claude Code's user settings file.
     claude_settings: PathBuf,
+    codex_settings: PathBuf,
 }
 
 impl Env {
@@ -230,6 +243,7 @@ impl Env {
             cwd_name,
             exe: std::env::current_exe().ok(),
             claude_settings: setup::claude::settings_path()?,
+            codex_settings: setup::codex::settings_path()?,
         })
     }
 }
@@ -251,6 +265,8 @@ fn main() -> ExitCode {
         }
     };
 
+    let codex_hook =
+        matches!(&cli.command, Command::Signal(args) if args.harness == Harness::Codex);
     let harness_path = cli.command.is_harness_path();
     let outcome =
         panic::catch_unwind(move || Env::capture().and_then(|env| run(cli.command, &env)));
@@ -262,6 +278,9 @@ fn main() -> ExitCode {
         }
         Err(_) => false, // the panic hook has already printed the message
     };
+    if codex_hook {
+        let _ = print_line("{}");
+    }
     if succeeded || harness_path {
         ExitCode::SUCCESS
     } else {
@@ -281,9 +300,9 @@ fn run(command: Command, env: &Env) -> Result<(), Error> {
         Command::State(args) => state(args, env),
         Command::Watch => watch(env),
         Command::Snapshot => snapshot(env),
-        Command::Check => check(env),
+        Command::Check { harness } => check(harness, env),
         Command::Setup(args) => setup(args, env),
-        Command::Uninstall { purge } => uninstall(purge, env),
+        Command::Uninstall { harness, purge } => uninstall(harness, purge, env),
     }
 }
 
@@ -378,7 +397,7 @@ fn snapshot(env: &Env) -> Result<(), Error> {
 
 /// Prints what a pet will find on this machine, and fails if anything would stop it working.
 /// Keeps going after a problem, so one run shows all of them.
-fn check(env: &Env) -> Result<(), Error> {
+fn check(harness: Harness, env: &Env) -> Result<(), Error> {
     let mut problems = 0;
 
     match &env.exe {
@@ -405,32 +424,42 @@ fn check(env: &Env) -> Result<(), Error> {
         }
     }
 
-    let settings = env.claude_settings.display();
+    let name = harness::Harness::from(harness).id();
+    let settings = match harness {
+        Harness::ClaudeCode => &env.claude_settings,
+        Harness::Codex => &env.codex_settings,
+        Harness::OpenCode => return Err(Error::NotImplemented("check --harness opencode")),
+    };
+    let inspect = match harness {
+        Harness::Codex => setup::codex::inspect,
+        _ => setup::claude::inspect,
+    };
+    let path = settings.display();
     match env.exe.as_deref() {
         None => print_line(&format!(
-            "claude-code: {settings}: not checked, since hooks must name this program's path"
+            "{name}: {path}: not checked, since hooks must name this program's path"
         ))?,
-        Some(exe) => match setup::claude::inspect(&env.claude_settings, exe) {
+        Some(exe) => match inspect(settings, exe) {
             Err(err) => {
                 problems += 1;
-                print_line(&format!("claude-code: {err}"))?;
+                print_line(&format!("{name}: {err}"))?;
             }
             Ok(inspection) if inspection.missing.is_empty() && inspection.unexpected.is_empty() => {
                 print_line(&format!(
-                    "claude-code: all {} hooks set up in {settings}",
+                    "{name}: all {} hooks set up in {path}",
                     inspection.expected
                 ))?
             }
             Ok(inspection) => {
                 problems += inspection.missing.len() + inspection.unexpected.len();
-                print_line(&format!("claude-code: {settings}"))?;
+                print_line(&format!("{name}: {path}"))?;
                 for hook in &inspection.missing {
                     print_line(&format!("  missing: {hook}"))?;
                 }
                 for hook in &inspection.unexpected {
                     print_line(&format!("  unexpected: {hook}"))?;
                 }
-                print_line("  run `remi-hook setup` to fix")?;
+                print_line(&format!("  run `remi-hook setup --harness {name}` to fix"))?;
             }
         },
     }
@@ -446,21 +475,22 @@ fn setup(args: SetupArgs, env: &Env) -> Result<(), Error> {
     if args.forward.is_some() {
         return Err(Error::NotImplemented("setup --forward"));
     }
-    match args.harness {
-        Harness::ClaudeCode => {}
-        Harness::OpenCode => return Err(Error::NotImplemented("setup --harness opencode")),
-    }
     let exe = env.exe.as_deref().ok_or(Error::NoExePath)?;
 
-    let edit = setup::claude::install(&env.claude_settings, exe)?;
+    let name = harness::Harness::from(args.harness).id();
+    let edit = match args.harness {
+        Harness::ClaudeCode => setup::claude::install(&env.claude_settings, exe)?,
+        Harness::Codex => setup::codex::install(&env.codex_settings, exe)?,
+        Harness::OpenCode => return Err(Error::NotImplemented("setup --harness opencode")),
+    };
     match &edit.saved {
         Saved::Unchanged => print_line(&format!(
-            "claude-code: already set up in {}",
+            "{name}: already set up in {}",
             edit.path.display()
         ))?,
         Saved::Written { backup } => {
             print_line(&format!(
-                "claude-code: wrote {} hooks to {}, running {}",
+                "{name}: wrote {} hooks to {}, running {}",
                 edit.added,
                 edit.path.display(),
                 exe.display()
@@ -477,26 +507,35 @@ fn setup(args: SetupArgs, env: &Env) -> Result<(), Error> {
         }
     }
 
+    if args.harness == Harness::Codex {
+        print_line(
+            "codex: restart Codex and review/trust the Remi hooks with /hooks before they can run; check verifies the file, not Codex trust",
+        )?;
+    }
     if args.check {
-        check(env)?;
+        check(args.harness, env)?;
     }
     Ok(())
 }
 
-fn uninstall(purge: bool, env: &Env) -> Result<(), Error> {
+fn uninstall(harness: Harness, purge: bool, env: &Env) -> Result<(), Error> {
     if purge {
         return Err(Error::NotImplemented("uninstall --purge"));
     }
 
-    let edit = setup::claude::uninstall(&env.claude_settings)?;
+    let name = harness::Harness::from(harness).id();
+    let edit = match harness {
+        Harness::ClaudeCode => setup::claude::uninstall(&env.claude_settings)?,
+        Harness::Codex => setup::codex::uninstall(&env.codex_settings)?,
+        Harness::OpenCode => return Err(Error::NotImplemented("uninstall --harness opencode")),
+    };
     match &edit.saved {
-        Saved::Unchanged => print_line(&format!(
-            "claude-code: no remi hooks in {}",
-            edit.path.display()
-        )),
+        Saved::Unchanged => {
+            print_line(&format!("{name}: no remi hooks in {}", edit.path.display()))
+        }
         Saved::Written { backup } => {
             print_line(&format!(
-                "claude-code: removed {} remi hooks from {}",
+                "{name}: removed {} remi hooks from {}",
                 edit.removed,
                 edit.path.display()
             ))?;

@@ -46,7 +46,13 @@ pub fn create(app: &AppHandle) {
         Err(err) => return tracing::error!("decoding the menu bar icon: {err}"),
     };
 
+    // AppIndicator on Linux needs a menu at creation time to expose the tray icon.
+    let initial_menu = match menu::build(app) {
+        Ok(menu) => menu,
+        Err(err) => return tracing::error!("building the menu bar menu: {err}"),
+    };
     let built = TrayIconBuilder::with_id(ID)
+        .menu(&initial_menu)
         .icon(icon)
         // On macOS the glyph is one flat black shape on transparency precisely so this can be
         // true: as a template it is tinted to match the bar, correct in light and dark and dimmed
@@ -58,9 +64,7 @@ pub fn create(app: &AppHandle) {
         .build(app);
 
     match built {
-        // The menu is attached by the same path that will replace it, so there is one description
-        // of what the tray shows rather than an initial one and an updating one that can disagree.
-        Ok(_) => refresh(app),
+        Ok(_) => {}
         Err(err) => tracing::error!("creating the menu bar icon: {err}"),
     }
 }

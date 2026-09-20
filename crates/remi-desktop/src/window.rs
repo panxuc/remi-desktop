@@ -122,7 +122,7 @@ fn follow_fullscreen(window: &WebviewWindow) {
 }
 
 /// Nothing to do off macOS: full-screen Spaces are a macOS idea, and `visibleOnAllWorkspaces`
-/// already covers the workspace switchers that Windows and Linux have.
+/// covers supported workspace switchers. Native Wayland still needs compositor rules.
 #[cfg(not(target_os = "macos"))]
 fn follow_fullscreen(_window: &WebviewWindow) {}
 

@@ -14,6 +14,8 @@ use crate::record::{HarnessId, SessionId};
 pub enum Harness {
     /// Claude Code, through hooks in its settings.json.
     ClaudeCode,
+    /// Codex, through lifecycle hooks in hooks.json.
+    Codex,
     /// OpenCode, through a plugin.
     OpenCode,
 }
@@ -24,6 +26,7 @@ impl Harness {
     pub fn id(self) -> HarnessId {
         let id = match self {
             Harness::ClaudeCode => "claude-code",
+            Harness::Codex => "codex",
             Harness::OpenCode => "opencode",
         };
         HarnessId::new(id).expect("built-in harness ids are valid")
@@ -33,10 +36,13 @@ impl Harness {
     /// and gives an empty [`HookInput`], so the hook can be run by hand without any.
     pub fn read_input(self, mut stdin: impl Read) -> Result<HookInput, Error> {
         match self {
-            Harness::ClaudeCode => {
+            Harness::ClaudeCode | Harness::Codex => {
                 let mut json = Vec::new();
                 stdin.read_to_end(&mut json).map_err(Error::Read)?;
-                claude::parse(&json)
+                claude::parse(&json).map_err(|err| match self {
+                    Harness::Codex => Error::Codex(err),
+                    _ => Error::ClaudeCode(err),
+                })
             }
             // The plugin passes everything as flags. Its stdin is never read, so a plugin that
             // leaves it open cannot keep the hook waiting.
@@ -60,6 +66,8 @@ pub struct HookInput {
 pub enum Error {
     #[error("reading hook input: {0}")]
     Read(#[source] io::Error),
+    #[error("invalid Codex hook input: {0}")]
+    Codex(#[source] serde_json::Error),
     #[error("invalid Claude Code hook input: {0}")]
     ClaudeCode(#[source] serde_json::Error),
 }
@@ -94,9 +102,22 @@ mod tests {
     }
 
     #[test]
+    fn codex_reads_the_shared_envelope_and_reports_its_own_errors() {
+        let input = Harness::Codex.read_input(&br#"{"session_id":"thread-1","cwd":"/repos/remi","transcript_path":null,"turn_id":"turn-1"}"#[..]).unwrap();
+        assert_eq!(input.session.unwrap().as_str(), "thread-1");
+        assert_eq!(input.cwd.as_deref(), Some("remi"));
+        assert_eq!(input.transcript, None);
+        assert!(matches!(
+            Harness::Codex.read_input(&b"bad json"[..]),
+            Err(Error::Codex(_))
+        ));
+    }
+
+    #[test]
     fn ids_are_the_documented_ones() {
         // Also proves `id` never panics.
         assert_eq!(Harness::ClaudeCode.id().as_str(), "claude-code");
+        assert_eq!(Harness::Codex.id().as_str(), "codex");
         assert_eq!(Harness::OpenCode.id().as_str(), "opencode");
     }
 }

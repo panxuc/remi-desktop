@@ -16,9 +16,7 @@ pub enum PetState {
     WaitingForInput,
     /// Just finished a turn; the pet fades this to idle after a few seconds.
     Proud,
-    /// Between turns: what `Proud` fades into. Never written to a record, since the pet derives
-    /// it by timing `Proud` on its own clock. It is in this enum so the renderer has a single
-    /// input type.
+    /// Between turns: what `Proud` fades into, or an explicitly interrupted turn.
     Idle,
     /// The session has ended.
     Offline,

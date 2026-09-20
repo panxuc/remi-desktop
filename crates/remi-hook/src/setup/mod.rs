@@ -4,6 +4,8 @@
 //! it.
 
 pub mod claude;
+pub mod codex;
+mod json_hooks;
 
 use std::fs;
 use std::io::{self, Write};

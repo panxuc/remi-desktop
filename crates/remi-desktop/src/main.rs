@@ -48,6 +48,12 @@ fn context_menu(app: tauri::AppHandle, x: f64, y: f64) {
 }
 
 fn main() {
+    // Before GTK/Tauri opens a display: X11 (including XWayland) lets a desktop pet
+    // restore its position and request always-on-top. Fall back to native Wayland;
+    // an explicit GDK_BACKEND remains authoritative.
+    #[cfg(target_os = "linux")]
+    gdk::set_allowed_backends("x11,wayland");
+
     // `RUST_LOG=remi_desktop=debug,remi_core=debug` turns on the per-change state lines.
     tracing_subscriber::fmt()
         .with_env_filter(

@@ -7,8 +7,8 @@
 // opacity crossfade between two unrelated bitmaps, which always reads as a dissolve rather than
 // as Remi moving. Kept only so that one failure mode has an answer.
 
-// Staged by build.rs under their original names, but only when the `gif-fallback` cargo feature is
-// on — the art is 8.5 MiB and everything under `ui/` is embedded in the binary. This module ships
+// Staged by build.rs under their original names on Linux or when `gif-fallback` is
+// enabled — the art is 8.5 MiB and everything under `ui/` is embedded in the binary. This module ships
 // unconditionally; its art does not.
 const GIF = {
   writing: "01writing.gif",

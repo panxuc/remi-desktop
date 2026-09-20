@@ -54,6 +54,7 @@ fn stage_assets() {
 /// is the only thing cargo actually sets.
 fn gif_fallback_enabled() -> bool {
     std::env::var_os("CARGO_FEATURE_GIF_FALLBACK").is_some()
+        || std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
 }
 
 /// An atlas names its page image on its own line, so renaming `leimi.png` means rewriting that

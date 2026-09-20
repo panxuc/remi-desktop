@@ -16,7 +16,7 @@
 | # | Question | Decision | Where |
 |---|---|---|---|
 | 1 | GUI stack | **Tauri v2 + Rust** — ✅ proven at M1, transparent WebGL composites. `egui`/`eframe` fallback unused | brief §3, §11 |
-| 2 | Platforms | **macOS + Windows** for v1. Linux is not a priority; on Wayland it needs user-applied KWin rules | brief §7 |
+| 2 | Platforms | **macOS + Windows + Linux**. Linux prefers X11/XWayland; native Wayland needs compositor rules | brief §7 |
 | 3 | Renderer | **Spine from day one**, not a v1.1 swap — ✅ shipped at M2. `renderer/gif.js` kept behind the same contract, but its art is behind the `gif-fallback` cargo feature and off by default | §5.3, §5.5 |
 | 4 | Frontend tooling | **No build step.** Static files, ES modules, `spine-webgl` vendored. Keeps node out of the Windows build | §5 |
 | 5 | Crates | `remi-core` (UI-free, all the logic) · `remi-desktop` · `remi-hook` | §2 |
@@ -38,7 +38,7 @@
 | 19 | Timeouts | **No written pose times out.** Hooks write only on events, so a pending approval or a long tool call is silent, and a timeout would hide exactly the waiting pose. Only `Proud` decays, to `Idle` after 8 s — and a `Proud` the pet finds on attach rather than watches arrive starts already faded, since it is an edge and the pet has no idea how old it is. MQTT LWT is out too: a fire-and-forget hook can never trigger it | §4.3, brief §4 |
 | 20 | Naming | `remi-desktop`, bundle id `moe.anything.remi`. `touchbar-remi` retired | §11 |
 | 21 | Harness support | Adapters emit a **neutral event vocabulary**; one reducer turns those into poses. No adapter names a pose | §3.5 |
-| 22 | Which harnesses in v1 | **Claude Code and OpenCode.** Codex deferred — pull-only, lossy tool classification, approvals unverified | §3.6, §11 |
+| 22 | Which harnesses in v1 | **Claude Code and Codex.** OpenCode remains planned; Codex uses lifecycle hooks | §3.6, §11 |
 | 23 | Push over pull | Prefer the harness spawning `remi-hook` (a hook, a plugin) over us tailing a log or holding a subscription. Push needs nothing resident and works under all three transports | §3.4 |
 | 24 | Session identity | `(connection, harness, session)`. One box can run two harnesses at once, and the state dir, `watch` output and MQTT topic all name the harness | §3.2, §4.2, §4.3 |
 | 25 | Installing on a target | **One `install.sh`**, published with the release. All configuration is `remi-hook setup`, run *on* the target. The pet pipes the script over ssh stdin; the `mqtt` case the user runs by hand | §6.1 |
@@ -294,7 +294,7 @@ way.
 ╔══ MACHINE WHERE THE AGENT RUNS ═══ (laptop, or plume, or any box) ══╗
 ║                                                                    ║
 ║   ┌────────────────┐                                               ║
-║   │    harness     │   Claude Code · OpenCode · (Codex, later)     ║
+║   │    harness     │   Claude Code · Codex · (OpenCode, later)     ║
 ║   └───────┬────────┘                                               ║
 ║           │  STEP 1 — get the event out of the harness.            ║
 ║           │  THE ONLY PART THAT DIFFERS PER HARNESS. Push or pull. ║
@@ -356,7 +356,7 @@ Per harness:
   turns it into the Claude Code shape: no port to discover, no connection to keep alive, and
   it works over `mqtt`. The SSE adapter stays specified as the fallback for anyone who will
   not install a plugin.
-- **Codex — pull only, and therefore deferred.** See §3.6.
+- **Codex — push through lifecycle hooks**, using the same file writer. See §3.6.
 
 ### 3.5 The neutral event vocabulary
 
@@ -381,6 +381,7 @@ pub enum Signal {
     ApprovalAsked,
     ApprovalAnswered,
     TurnEnd,
+    TurnInterrupted,
     SessionEnd,
 }
 
@@ -396,8 +397,8 @@ The variants mirror `remi-hook signal`'s event names one to one, and carry no pa
 depends on a tool's name or on whether it succeeded. The tool's class is the event itself
 (`ReadStart` / `EditStart`); add a variant only if a pose ever needs another class.
 
-There is no session-started signal. No pose fits a session that has not had a prompt yet
-(`Idle` is never written), and Claude Code's `SessionStart` also fires on compaction, mid-turn,
+There is no session-started signal. A session enters the menu on its first prompt.
+Claude Code's `SessionStart` also fires on compaction, mid-turn,
 where writing anything would clobber the real pose. A session appears in the menu from its
 first prompt.
 
@@ -519,48 +520,38 @@ It also names its tools directly (`read`, `edit`, `write`, `bash`, `grep`, `glob
 
 ### 3.6 Harness support in v1
 
-**v1 ships Claude Code and OpenCode. Codex is deferred.** The design must stay structurally
-able to take Codex (and anything else) later; it is not built now.
+**Claude Code and Codex have implemented adapters. OpenCode remains planned.** Both installed
+adapters push neutral events through `remi-hook signal`; neither needs a resident log tailer.
 
-Why Codex is the hard one — from its rollout logs, read on the dev machine 2026-09-10:
+Codex uses its [lifecycle hooks](https://learn.chatgpt.com/docs/hooks), configured in
+`$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`). The shared JSON editor preserves other
+hooks and backs up the previous file. Setup, check and uninstall select the adapter with
+`--harness codex`. The user reviews and trusts new or changed hooks through Codex's `/hooks`
+flow; installation does not change trust, `config.toml` or existing `notify` commands.
 
-- **No hook system.** Its only push is `notify` in `config.toml`, which fires on turn
-  completion and nothing else. With `notify` alone Remi can only ever be `Proud` or `Idle`.
-- **Its real signal is an append-only log**, one file per session at
-  `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, carrying `session_meta`
-  (id, `cwd`, git branch), `turn_context` (`approval_policy`, sandbox), `event_msg/task_started`,
-  `event_msg/task_complete`, `response_item/function_call` and `function_call_output`. That is
-  a **pull** adapter, with the resident-process cost in §3.4.
-- **Tool classification is lossy.** Codex's tool surface is shell-shaped: every one of the 62
-  tool calls in the sampled session was `exec_command`, and the only other writer is
-  `apply_patch`. `apply_patch` → `Writing` and `exec_command` → `Viewing` is the whole mapping;
-  parsing `rg`/`cat`/`sed` out of the command string is a heuristic we should not build.
-- **The headline pose may not be observable at all.** No approval request appeared in the
-  sampled rollout — that session ran a permissive sandbox and was never asked anything — so
-  whether approvals reach the log is unverified (§12).
+| Codex event | Neutral signal | Result |
+|---|---|---|
+| `UserPromptSubmit` | `TurnStart` | thinking |
+| `PreToolUse` for read tools | `ReadStart` | viewing |
+| `PreToolUse` for `apply_patch` (`Edit` / `Write` aliases) | `EditStart` | writing |
+| `PermissionRequest`, or `PreToolUse` for `request_user_input` | `ApprovalAsked` | waiting |
+| `PostToolUse`, including failed shell commands | `ToolEnd` | thinking; clears waiting |
+| `Stop` | `TurnEnd` | proud, then idle |
+| `Interrupt` | `TurnInterrupted` | idle; keeps the session |
+| `SessionEnd` | `SessionEnd` | removes the record |
 
-One genuinely nice property, for when we do come back to it: because the log is durable and
-append-only, a puller that starts late reads back through the file and catches up. Nothing is
-lost while nobody is watching, which is the same retention guarantee the register gives us.
+The shared stdin envelope supplies `session_id`, `cwd`, and optional `transcript_path`.
+Transcript contents are never read. Codex hook invocations return an empty JSON object and exit
+successfully even if recording fails, so Remi cannot approve, deny or block work.
 
-#### What "structurally compatible" obliges us to do now
+Coverage has limits: shell commands keep the thinking pose because their names do not establish
+whether they edit files; there is no reply-stream hook; hosted tools without lifecycle hooks
+are not observable. Events before installation are not reconstructed from rollout logs.
 
-These are the parts that are expensive to retrofit, so they land in v1 even though only two
-harnesses use them:
-
-1. **`harness` is part of session identity**, not a display afterthought — it is in
-   `SessionRecord` (§4.2), in the state dir's layout (§3.2) and in `SessionKey` (§4.3). One
-   box can run two harnesses at once, and the menu has to say which.
-2. **The neutral vocabulary and the reducer exist as their own module** (§3.5), even with two
-   adapters. A third harness must be a new file under `harness/` and nothing else.
-3. **`remi-hook signal` is the writer's entry point**, not `remi-hook state` (§6). A pushing
-   harness only ever names a neutral event; only the reducer names a pose.
-4. **`HarnessCaps` is declared per adapter** and printed by `remi-hook check` (§6). Support
-   is not uniform — Codex-with-`notify` cannot produce `WaitingForInput` — and the user should
-   be able to see why a pose never fires on a given host rather than filing it as a bug.
-5. **`remi-hook watch` is specified as "the state dir, plus any enabled pull adapters"** even
-   though v1 enables none. That is the seam a Codex adapter plugs into, and writing it into
-   the contract now costs nothing.
+Harness identity remains part of the record and session key, so Claude Code and Codex can run
+on the same machine without collisions. The registry, file watcher, SSH transport, menus and
+renderer consume the same records. Future adapters should reuse this path and document their
+actual event coverage.
 
 ## 4. `remi-core`
 
@@ -600,7 +591,7 @@ only `source/`.
 pub enum PetState { Thinking, Viewing, Writing, Replying, WaitingForInput, Proud, Idle, Offline }
 ```
 
-`Idle` is never published — it is synthesised locally by the registry from `Proud` decay.
+`Idle` is synthesised locally from `Proud` decay, or written when a turn is interrupted.
 Keeping it in the same enum means the renderer has exactly one input type.
 
 A state names what the agent is doing, not which animation plays, so it is not one-to-one with
@@ -1052,9 +1043,12 @@ count in the config ticks none of the three, which is the truth.
 Two mechanics that are not obvious and not discoverable from the failure:
 
 ⚠️ **A webview cannot draw a native menu**, so the gesture is JavaScript's and the menu is Rust's:
-`ui/app.js` catches `contextmenu`, calls `preventDefault` (which is what suppresses the webview's
-own menu) and invokes the `context_menu` command. Tauri's drag script only acts on button 0, so a
-right-click never starts a drag.
+`ui/app.js` catches `contextmenu` and calls `preventDefault` to suppress the webview's own menu.
+If the right button is still held, it saves the click position and invokes `context_menu` on
+`mouseup`; opening earlier lets GTK dismiss the menu on that same release. Keyboard invocation
+and backends that deliver `contextmenu` after release open immediately. Losing focus or cancelling
+the pointer clears a pending click. Tauri's drag script only acts on button 0, so a right-click
+never starts a drag.
 
 ⚠️ **`context_menu` must be `#[tauri::command(async)]`.** Creating a menu marshals to the main
 thread and blocks until it answers, and on macOS the popup then runs a nested event loop there
@@ -1253,16 +1247,14 @@ Useful for testing the pet end to end, and for any harness that can run a
 command but whose events we have not modelled. It cannot express "return to what you were
 doing", so it is not what an adapter should use.
 
-`remi-hook check` prints this program's path, the state dir with its session count, and for
-each harness whether every hook `setup` would write is in place — listing the missing ones, and
+`remi-hook check --harness <name>` prints this program's path, the state dir with its session
+count, and whether every hook `setup` would write for the selected harness is in place — listing the missing ones, and
 remi hooks `setup` wouldn't write, such as those from an older version or naming another copy of
 `remi-hook`. It exits non-zero on any problem. Printing each adapter's `HarnessCaps` (§3.6) is
 still to come: support is not uniform across harnesses, and a pose that never fires should be
 legible as a capability gap rather than a bug.
 
-`remi-hook watch` is what the pet runs over ssh (§4.4). It watches **the state dir, plus any
-enabled pull adapters** — v1 enables none, but that is the seam a Codex adapter plugs into
-(§3.6), and writing it into the contract now costs nothing. It prints the whole listing as one
+`remi-hook watch` is what the pet runs over ssh (§4.4). It watches **the state directory**; both implemented adapters write there through hooks. It prints the whole listing as one
 JSON array per line, flushing each, first at start and then whenever the listing changes (§4.4).
 It exits when stdin closes, when stdout stops accepting writes, or on SIGTERM, so a dropped ssh
 connection reaps it. It creates the state dir if no session has written yet, and never prunes.
@@ -1429,7 +1421,7 @@ build it is.
 | `remi-hook` | `x86_64-apple-darwin` + `aarch64-apple-darwin`, `lipo`'d into one universal binary | `macos-14` |
 | `remi-hook` | `x86_64-pc-windows-msvc` | `windows-latest` |
 | `remi-desktop` | universal `.app` in a `.tar.gz`; `.msi` + NSIS `.exe` | `macos-14`, `windows-latest` |
-| `remi-desktop` on Linux | **not shipped.** It compiles and runs there (2026-09-15), but the pet is not a development focus on Linux; positioning, stacking and taskbar hiding rely on KWin rules the user applies by hand (brief §7) | — |
+| `remi-desktop` on Linux | **x86_64**; X11/XWayland preferred, native Wayland requires compositor rules (brief §7) | `.deb`, `.AppImage` |
 | `install.sh` + `SHASUMS256.txt` | — | attached to the release |
 
 `remi-hook` needs the macOS and Windows targets even though remotes are Linux: the pet bundles
@@ -1605,7 +1597,7 @@ is a way back, and fading out becomes the better answer as well as the cheaper o
 unblocked: port the `tools/spine-viewer` render loop into `renderer/spine.js` and measure
 idle battery cost.
 
-Later, unsequenced: `tray.rs` (above); Codex adapter (§3.6); a shared source lifecycle, or a
+Later, unsequenced: OpenCode adapter; a shared source lifecycle, or a
 source trait, once `ssh` and `mqtt` exist (§4.4); installing `remi-hook` to a host from the menu
 (§5.2, §6.1); returning a Claude Code session to idle after Ctrl+C/Esc, which fires no hook,
 by spotting the `[Request interrupted by user…]` line in its transcript from `StateDirWatch`;
@@ -1648,11 +1640,8 @@ the first milestone that needs a public `install.sh` to exist. Everything before
 
 ## 11. Not in v1
 
-Linux (brief §7) · Touch Bar (brief §6) · rendering more than one session at once ·
-real LWT (brief §4) · local IME indicator · phone push · **Codex** (§3.6).
-
-Codex is deferred, not rejected: the five obligations in §3.6 exist so it stays a new file
-under `harness/` rather than a redesign.
+Touch Bar (brief §6) · rendering more than one session at once · real LWT (brief §4) ·
+local IME indicator · phone push · OpenCode adapter. Linux and Codex are implemented (§3.6).
 
 Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. The old
 `touchbar-remi` name is retired.
@@ -1679,11 +1668,9 @@ Naming: repo and product are **remi-desktop**; bundle id `moe.anything.remi`. Th
    to do it by hand. `.github/workflows/ci.yml` now at least runs `cargo test` on a
    Windows runner, which is what keeps the Unix-only gap from widening silently.
 4. **Where Mosquitto runs**, and cert/auth specifics (brief §10). Gates M5 only.
-5. **Do Codex approval requests reach the rollout log?** Unverified — the sampled session ran
-   a permissive sandbox and was never asked anything (§3.6). Ten-minute experiment when Codex
-   comes back on the table: set `approval_policy = "untrusted"`, trigger a prompt, grep the
-   new rollout file. If they do not appear, Codex ships without `WaitingForInput` and that
-   should be known before the adapter is written, not after.
+5. **Codex client coverage.** Lifecycle hooks report approval requests directly (§3.6).
+   Clients must load and trust the installed hooks; reply streaming and hosted-tool coverage
+   remain limited by the runtime hook API.
 6. **Code signing.** Deferred (§7). An Apple Developer ID is the only thing that removes the
    Gatekeeper quarantine from a downloaded `.dmg`, and it costs money; Windows SmartScreen
    wants an EV cert or download reputation. Until then the release notes carry the

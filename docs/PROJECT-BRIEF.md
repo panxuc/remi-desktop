@@ -10,8 +10,8 @@
 ## 1. What we are building
 
 A **desktop pet** — a small transparent always-on-top window showing an animated anime
-character (Remi) — whose animation state reflects **what Claude Code is currently doing on a
-remote machine**.
+character (Remi) — whose animation state reflects **what Claude Code or Codex is currently
+doing, locally or on a remote machine**.
 
 Two status inputs, in priority order of value:
 
@@ -285,33 +285,26 @@ the user from a published `install.sh` for hosts the pet cannot reach. Plan §6.
 
 ---
 
-## 7. Linux — not a priority, and why
+## 7. Linux
 
-Linux (KDE Plasma) is **not a priority for v1** and gets no release build. The blocker is not
-the toolkit, it's **Wayland**, and it would hit identically regardless of GUI framework:
+Linux is a desktop target. The release workflow builds x86_64 `.deb` and AppImage packages;
+`remi-hook` also ships static Linux x86_64 and aarch64 binaries for agent hosts.
 
-- Wayland's `xdg-shell` has **no protocol request for a client to set its own position**, by
-  design. A pet cannot restore itself to where the user left it.
-- A client also cannot declare itself always-on-top; that's compositor policy.
-- Transparency itself is *fine* — KWin always composites. Only positioning/stacking are blocked.
-- Plasma 6 defaults to Wayland.
+Before GTK opens a display, Remi prefers **X11 / XWayland**, then falls back to native Wayland.
+This permits client requests for saved window position, always-on-top and taskbar hiding when
+X11 is available. The user's `GDK_BACKEND` selection takes precedence.
 
-The pet does build and run there. What works today is KWin window rules, applied by the user
-by hand, matched on window class (verified on Plasma 6 Wayland, 2026-09-17):
+Native Wayland leaves those operations to the compositor. KDE Plasma users can add window
+rules matching Remi's window class:
 
-- `Position` → Remember — KWin restores her to where she was when she closed.
+- `Position` → Remember.
 - `Keep above other windows` → Apply initially, Yes.
-- `Skip taskbar`, `Skip pager`, `Skip switcher` → Apply initially, Yes. Tauri's
-  `skipTaskbar` is an X11 hint that GTK drops on Wayland, so without the rule she shows in the
-  taskbar and Alt+Tab.
+- `Skip taskbar`, `Skip pager`, `Skip switcher` → Apply initially, Yes.
 
-If Linux is ever made a real target, the alternatives to asking users for rules: `wlr-layer-shell`
-(KWin implements it, but almost no Rust toolkit exposes it — you'd drop to
-`smithay-client-toolkit`); or running under XWayland with `GDK_BACKEND=x11`, where position,
-stacking and skip-taskbar are client requests again (KDE is winding X11 down, though).
-
-macOS and Windows have none of these problems — both do transparent + always-on-top +
-click-through + arbitrary positioning without complaint.
+GTK 3, WebKitGTK 4.1 and AppIndicator are build/runtime dependencies. Linux initializes the tray
+with its menu already attached; GNOME needs an AppIndicator extension to display it. The pet's
+right-click menu remains available. Linux builds include GIF art for fallback when WebGL fails.
+See the [README](../README.md#linux) for installation and build commands.
 
 ---
 
@@ -377,8 +370,8 @@ broker). This section is left as a pointer only so the two files cannot drift.
   written. What replaces this question is a harder one — the character art is a third party's
   (`assets/README.md`), and a public repo plus a downloadable binary both redistribute it.
   That, not the CI host, is what gates the first public release.
-- Do Codex approval requests reach its rollout log? Unverified, and it decides whether Codex
-  can ever show the waiting pose (§12, plan §12).
+- Codex lifecycle hooks report approval requests directly. Reply streaming and hosted tools
+  without hooks remain outside the adapter's coverage (§12).
 
 ---
 
@@ -445,71 +438,36 @@ prefixes (`A_`/`B_`/…, which are redrawn parts *per pose*), not from looking a
 
 ---
 
-## 12. More than one harness — status 2026-09-10
+## 12. More than one harness
 
-**Decided: v1 ships Claude Code and OpenCode. Codex is deferred, and the design is built to
-take it later without a redesign.**
+**Claude Code and Codex are implemented; OpenCode remains planned.** Harness identity is part
+of the session record and directory layout, so one machine can run both without conflating
+sessions. Menus group the records by harness; the renderer and transports remain independent
+of which adapter wrote them.
 
-### Why this is cheaper than it looks
+Adapters emit neutral signals and a single reducer chooses poses. Both implemented adapters
+use command hooks to run `remi-hook signal`, write a state file and exit. There is no resident
+poller, transcript parser or network transport on the hook's write path.
 
-The level-semantics decision (§4) already did most of the work. A `SessionRecord` carries a
-*pose* and a timestamp, never a hook name — so the registry, all three transports, the session
-menu and the renderer have never known which harness produced a record. Supporting another
-harness is confined entirely to the write path. Nothing downstream moves.
+Codex setup merges lifecycle hooks into `$CODEX_HOME/hooks.json` while preserving other hooks,
+backups and existing `config.toml` / `notify` settings. Codex requires users to review and trust
+new or changed hooks through `/hooks`; `remi-hook check --harness codex` checks configuration,
+not that trust decision. Desktop/IDE clients need a runtime that loads these hooks and shares
+the configured home directory.
 
-What was missing was the vocabulary in between. Today the hook→pose mapping lives in the
-`settings.json` matcher, which is free and exactly right for Claude Code and does not
-generalise: a harness that hands you one undifferentiated event stream has to do the mapping
-in code. Three adapters each mapping straight to a pose means the policy "an edit means
-`Writing`" is written down three times and drifts. Hence the neutral event vocabulary
-and the single reducer in plan §3.5.
+The adapter observes prompt submission, read/edit tool calls, permission requests, tool results,
+turn completion, interruption and session end. Permission requests and `request_user_input`
+show the waiting pose; an interruption clears it to idle without deleting the session. Codex
+hook invocations emit empty JSON and exit successfully even when a write fails. Full event
+mapping and coverage limits are in plan §3.6 and the [README](../README.md#harnesses).
 
-### Push beats pull, and it is not a style preference
+Shell commands remain thinking because classifying their text as a read or write is unreliable.
+Reply streaming and hosted tools without lifecycle hooks cannot be observed. The supported hook
+interface supplies enough state for the pet without relying on the unstable rollout-log format.
 
-A harness that *spawns* `remi-hook` (Claude Code's hooks; an OpenCode plugin) needs nothing
-resident anywhere, so it works identically under all three transports. A harness we have to
-*pull* from — tailing a log, holding a subscription — needs someone doing the pulling, which
-exists under `local` and `ssh` but not under `mqtt`, where there is no pet on the remote. A
-pull-only harness therefore drags in the resident `remi-agent` this brief deferred in §4.
-That is the axis worth optimising, and it is why OpenCode should ship as a plugin even though
-its SSE stream is the more obvious integration.
-
-### Verified, not assumed (2026-09-10)
-
-Both harnesses were inspected on the dev machine rather than recalled — `opencode serve`'s
-live OpenAPI schema (1.16.2), and real Codex rollout logs in `~/.codex/sessions/`.
-
-**OpenCode is the best-instrumented of the three.** It emits both approval edges
-(`permission.v2.asked` / `permission.v2.replied`), which Claude Code does not, and it names
-its tools directly (`read`, `edit`, `write`, `bash`, `grep`, `glob`, `task`, `webfetch`,
-`skill`, `apply_patch`), so classification is a lookup rather than a guess. It also has a
-literal `session.status` level of `{idle, busy, retry}`. Full mapping in plan §3.5.
-
-**Codex is the difficult one**, on four independent counts:
-
-- No hook system. Its only push is `notify` in `config.toml`, which fires on turn completion
-  and nothing else — with `notify` alone Remi could only ever be `Proud` or `Idle`.
-- Its real signal is an append-only rollout log per session, so any useful adapter is pull.
-- Tool classification is lossy: its tool surface is shell-shaped. Every one of the 62 tool
-  calls in the sampled session was `exec_command`; the only other writer is `apply_patch`.
-  Read-versus-write beyond that means parsing command strings, which is a heuristic we should
-  not build.
-- **The headline feature may not be observable at all.** No approval request appeared in the
-  sampled rollout — that session ran a permissive sandbox and was never asked anything — so
-  whether approvals reach the log is unverified. Plan §12 records the ten-minute experiment
-  that settles it.
-
-Deferring Codex costs almost nothing because of the five structural obligations in plan §3.6
-that v1 honours anyway: `harness` is part of session identity, the vocabulary and reducer are
-their own module, `remi-hook signal` is the writer's entry point, `HarnessCaps` is declared
-per adapter, and `remi-hook watch` is specified as "the state dir plus any enabled pull
-adapters" even though v1 enables none. Those are the expensive-to-retrofit parts; the adapter
-itself is one file.
-
-One property worth remembering for when Codex comes back: because its rollout log is durable
-and append-only, a puller that starts late reads back and catches up. Nothing is lost while
-nobody is watching — the same retention guarantee the register gives us, which is why the
-deferral is safe rather than merely convenient.
+OpenCode's planned plugin can use its direct tool names and both approval edges
+(`permission.v2.asked` / `permission.v2.replied`). It should reuse the same neutral vocabulary
+and state writer when implemented.
 
 ### A bug this analysis surfaced — and closed
 

@@ -83,6 +83,9 @@ async function boot() {
 
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("contextmenu", onContextMenu);
+  window.addEventListener("mouseup", onContextMenuMouseUp);
+  window.addEventListener("blur", cancelContextMenu);
+  window.addEventListener("pointercancel", cancelContextMenu);
   // Handy from the webview inspector: `__remi.apply("proud")`, `__remi.setLive(false)`. The
   // second is the only way to see the not-live treatment without staging a real connection drop.
   window.__remi = { apply, setLive, states: STATES, get state() { return state; } };
@@ -126,9 +129,36 @@ function apply(next, opts) {
 /// The click's position goes along because Rust cannot find the cursor itself everywhere: Wayland
 /// gives no app the global pointer position. `clientX`/`clientY` are logical pixels from the
 /// window's top-left, which is what the menu is placed in.
+let pendingContextMenu = null;
+
 function onContextMenu(event) {
   event.preventDefault();
   const at = { x: event.clientX, y: event.clientY };
+
+  // WebKitGTK emits contextmenu while the right button is still down. Opening the native
+  // menu then lets that same button's release dismiss it, especially after a long press.
+  // Wait for release instead. Backends that emit contextmenu on release, and keyboard
+  // invocation, can open immediately because the right button is already up.
+  pendingContextMenu = null;
+  if (event.buttons & 2) {
+    pendingContextMenu = at;
+    return;
+  }
+  openContextMenu(at);
+}
+
+function onContextMenuMouseUp(event) {
+  if (event.button !== 2 || !pendingContextMenu) return;
+  const at = pendingContextMenu;
+  pendingContextMenu = null;
+  openContextMenu(at);
+}
+
+function cancelContextMenu() {
+  pendingContextMenu = null;
+}
+
+function openContextMenu(at) {
   tauri?.core?.invoke("context_menu", at).catch((err) => {
     console.error("could not open the session menu:", err);
   });

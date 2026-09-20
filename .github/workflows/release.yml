@@ -4,7 +4,7 @@
 #   * `remi-hook` — the write path. Linux first-class, because the remote is almost always a
 #     headless Linux box; macOS and Windows too, because the pet needs a hook for its own
 #     machine's `local` connection.
-#   * the pet — macOS and Windows. The Linux pet is deferred on Wayland grounds (brief §7).
+#   * the pet — macOS, Windows, and Linux (X11/XWayland preferred).
 #
 # The tag may carry a pre-release suffix (`v0.1.0-beta.1`); the *bundle* version never does.
 # It comes from Cargo.toml, and WiX rejects any pre-release identifier that is not numeric, so
@@ -104,6 +104,32 @@ jobs:
           name: pet-macos
           path: Remi-*-macos-universal.app.tar.gz
 
+  pet-linux:
+    # Build on 22.04 to avoid requiring a newer glibc than supported user systems.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo install tauri-cli --version "^2.11" --locked
+      - run: cargo tauri build --bundles deb,appimage
+        working-directory: crates/remi-desktop
+        env:
+          NO_STRIP: "true"
+      - name: collect Linux packages
+        run: |
+          mkdir -p out
+          cp target/release/bundle/deb/*.deb "out/Remi-${GITHUB_REF_NAME}-linux-x86_64.deb"
+          cp target/release/bundle/appimage/*.AppImage "out/Remi-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pet-linux
+          path: out/*
+
   pet-windows:
     runs-on: windows-latest
     steps:
@@ -124,7 +150,7 @@ jobs:
           path: out/*
 
   publish:
-    needs: [hook-linux, hook-macos, hook-windows, pet-macos, pet-windows]
+    needs: [hook-linux, hook-macos, hook-windows, pet-macos, pet-windows, pet-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write

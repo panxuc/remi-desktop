@@ -35,6 +35,8 @@ pub enum Signal {
     ApprovalAnswered,
     /// The agent finished its turn.
     TurnEnd,
+    /// The user interrupted the turn; the session remains available.
+    TurnInterrupted,
     /// The session closed.
     SessionEnd,
 }
@@ -81,6 +83,7 @@ impl Signal {
             // The guarded tool is about to run, so go back to what it was doing.
             Signal::ApprovalAnswered => (resume.unwrap_or(PetState::Thinking), None),
             Signal::TurnEnd => (PetState::Proud, None),
+            Signal::TurnInterrupted => (PetState::Idle, None),
             Signal::SessionEnd => {
                 return Update::Remove {
                     harness: context.harness,
@@ -203,6 +206,7 @@ mod tests {
             (None, ApprovalAsked, (WaitingForInput, None)),
             (None, ApprovalAnswered, (Thinking, None)),
             (None, TurnEnd, (Proud, None)),
+            (waiting_from_writing, TurnInterrupted, (Idle, None)),
             (
                 Some((Viewing, None)),
                 ApprovalAsked,

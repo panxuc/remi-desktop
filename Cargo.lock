@@ -2798,6 +2798,7 @@ name = "remi-desktop"
 version = "0.1.2"
 dependencies = [
  "directories",
+ "gdk",
  "remi-core",
  "serde",
  "tauri",

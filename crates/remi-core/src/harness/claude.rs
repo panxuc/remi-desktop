@@ -1,11 +1,11 @@
-//! Claude Code hands every hook a JSON object on stdin. Each event adds its own fields, but all
+//! Claude Code and Codex hand every hook a JSON object on stdin. Each event adds its own fields, but all
 //! of them carry `session_id`, `cwd` and `transcript_path`, which is all we read.
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{Error, HookInput};
+use super::HookInput;
 use crate::record::SessionId;
 
 /// The fields every hook payload shares. The rest, such as a tool's input and output, is
@@ -17,11 +17,11 @@ struct Payload {
     transcript_path: Option<PathBuf>,
 }
 
-pub(super) fn parse(json: &[u8]) -> Result<HookInput, Error> {
+pub(super) fn parse(json: &[u8]) -> Result<HookInput, serde_json::Error> {
     if json.iter().all(u8::is_ascii_whitespace) {
         return Ok(HookInput::default());
     }
-    let payload: Payload = serde_json::from_slice(json).map_err(Error::ClaudeCode)?;
+    let payload: Payload = serde_json::from_slice(json)?;
     let cwd = payload
         .cwd
         .and_then(|cwd| Some(Path::new(&cwd).file_name()?.to_string_lossy().into_owned()));
@@ -93,10 +93,7 @@ mod tests {
 
     #[test]
     fn rejects_junk_and_unsafe_session_ids() {
-        assert!(matches!(parse(b"not json"), Err(Error::ClaudeCode(_))));
-        assert!(matches!(
-            parse(br#"{"session_id":"../escape"}"#),
-            Err(Error::ClaudeCode(_))
-        ));
+        assert!(parse(b"not json").is_err());
+        assert!(parse(br#"{"session_id":"../escape"}"#).is_err());
     }
 }
