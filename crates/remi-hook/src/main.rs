@@ -265,8 +265,6 @@ fn main() -> ExitCode {
         }
     };
 
-    let codex_hook =
-        matches!(&cli.command, Command::Signal(args) if args.harness == Harness::Codex);
     let harness_path = cli.command.is_harness_path();
     let outcome =
         panic::catch_unwind(move || Env::capture().and_then(|env| run(cli.command, &env)));
@@ -278,9 +276,6 @@ fn main() -> ExitCode {
         }
         Err(_) => false, // the panic hook has already printed the message
     };
-    if codex_hook {
-        let _ = print_line("{}");
-    }
     if succeeded || harness_path {
         ExitCode::SUCCESS
     } else {
