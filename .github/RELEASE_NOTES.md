@@ -2,10 +2,13 @@ Remi is a desktop pet that shows what your coding agent is doing — on this mac
 
 Remi is harness-neutral by design: adapters report neutral events and one reducer turns those into poses. **Claude Code is the harness supported in this beta**; OpenCode is next.
 
-## Since beta.1
+## Since beta.2
 
-- Remi is no longer clipped while writing (5dd3637)
-- The install command below points at the right repository (22d1f4b)
+- Remi has a **menu bar icon** now, carrying the same session menu as her right-click — so she is reachable when she is behind a window, or hidden (35c4569)
+- **Hide Remi / Show Remi** in that menu puts her away and brings her back, and the row flips on the click that did it (35c4569, 7da2d3b)
+- The icon is a template glyph on macOS, tinted by the bar; on Windows and Linux it is the coloured ornament, which reads on a dark panel (bf7f8ce)
+- **macOS: she stays visible over full-screen apps** and on every Space, without stealing focus when you click her (eff4f6a)
+- The README now explains how to run her on Linux under KDE Plasma (ace94d3)
 
 ## Install the pet
 
@@ -17,11 +20,11 @@ xattr -dr com.apple.quarantine /Applications/Remi.app
 
 On macOS 15 and later the old right-click → Open bypass is gone; the alternative to the command above is System Settings → Privacy & Security → Open Anyway.
 
-Remi has no Dock icon and no menu bar — **right-click her** for the session menu, where you pick a session, connect to a host, change her size, and quit.
+Remi has no Dock icon. Her session menu is in the **menu bar**, and a **right-click on her** opens the same thing — pick a session, connect to a host, change her size, hide her, quit.
 
 **Windows 10/11** — download either `Remi-*-windows-x86_64.msi` or `Remi-*-windows-x86_64-setup.exe`. Also unsigned, so SmartScreen will warn: *More info* → *Run anyway*.
 
-**Linux** — no pet yet. Wayland has no protocol for a window to position itself or stay on top, which is the whole premise of a desktop pet. The hook below is fully supported on Linux, which is what matters for the machines the agent actually runs on.
+**Linux** — no release build. Wayland has no protocol for a window to position itself or stay on top, which is the whole premise of a desktop pet, so the pet is not a priority there; she does build and run, and the README explains the KDE Plasma window rules that make the compositor do it for her. The hook below is fully supported on Linux, which is what matters for the machines the agent actually runs on.
 
 ## Teach a machine to talk to her
 
@@ -44,7 +47,6 @@ To undo everything it did: `remi-hook uninstall`, or `remi-hook uninstall --purg
 - **Nothing is code-signed.** See the quarantine and SmartScreen notes above.
 - **The pet does not install the hook for you.** Even for your own machine, run the script above.
 - **No autostart.** Add Remi to your login items yourself.
-- **No tray icon.** Right-clicking Remi is the only route to her menu, so she never fully disappears — when no session is running she rests on screen, greyed out.
 - **Claude Code is the only harness with an adapter.** `--harness opencode` is accepted by the CLI but its plugin is not written yet.
 
 ## Credits

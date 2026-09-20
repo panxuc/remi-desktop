@@ -2780,7 +2780,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "remi-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "directories",
  "notify",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "remi-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "directories",
  "remi-core",
@@ -2810,7 +2810,7 @@ dependencies = [
 
 [[package]]
 name = "remi-hook"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "directories",
