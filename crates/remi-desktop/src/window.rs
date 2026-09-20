@@ -1,7 +1,8 @@
 //! The pet window: its size, and remembering where the user put it.
 //!
-//! Transparency, decorations, always-on-top and shadow are all declared in `tauri.conf.json`, not
-//! here — they have to be set when the window is created.
+//! Transparency, decorations, always-on-top, shadow and `visibleOnAllWorkspaces` are all declared
+//! in `tauri.conf.json`, not here — they have to be set when the window is created. The one
+//! exception is [`follow_fullscreen`], which no cross-platform setting covers.
 
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +29,8 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
         show(window, false);
     }
 
+    follow_fullscreen(window);
+
     resize(window, size);
 
     // No saved position on a first run: leave the window wherever the OS put it rather than
@@ -51,6 +54,77 @@ pub fn configure(window: &WebviewWindow, config: &Arc<Mutex<Config>>, saver: Sav
 
     watch_position(window, config.clone(), saver);
 }
+
+/// Lets the pet appear over a full-screen app, on macOS.
+///
+/// Three things have to be true, and only the first is a window setting:
+///
+/// **Admission.** `visibleOnAllWorkspaces` in `tauri.conf.json` covers ordinary Spaces — it is
+/// `NSWindowCollectionBehaviorCanJoinAllSpaces`, and that is the whole of what tao sets. The Space
+/// macOS builds for a green-button full-screen app is stricter: it admits only windows that have
+/// *also* declared `FullScreenAuxiliary`, the window saying "I am not the one going full screen,
+/// I am something that may be shown alongside whoever is".
+///
+/// **Being a panel.** Admission is not enough, and neither is raising the window level: AppKit
+/// will not composite an ordinary `NSWindow` over another app's full-screen Space however high it
+/// floats. Only an `NSPanel` gets that, which is why this goes through `tauri-nspanel` — it
+/// reclasses the window tao made. Without it the pet is a *member* of the Space, which is exactly
+/// the half-fixed state where she shows up in Mission Control and then fades out behind the
+/// full-screen app.
+///
+/// **Not stealing focus.** `NonactivatingPanel`, because clicking a pet that activates the app
+/// would throw the user out of the full-screen Space they are working in — which would make the
+/// pet visible there and useless there in the same gesture.
+///
+/// The level is the menu bar's rather than higher: `NSPopUpMenuWindowLevel` and above is where
+/// menus live, and the pet's own right-click menu has to open in front of her. `main.rs` making
+/// the app an accessory is the last prerequisite — a regular app in the Dock does not float over
+/// another app's full-screen Space whatever its window says.
+#[cfg(target_os = "macos")]
+fn follow_fullscreen(window: &WebviewWindow) {
+    use tauri_nspanel::{CollectionBehavior, PanelLevel, StyleMask, WebviewWindowExt, tauri_panel};
+
+    tauri_panel! {
+        panel!(PetPanel {
+            config: {
+                can_become_key_window: false,
+                can_become_main_window: false,
+                is_floating_panel: true
+            }
+        })
+    }
+
+    let panel = match window.to_panel::<PetPanel>() {
+        Ok(panel) => panel,
+        Err(err) => {
+            // Not fatal: the pet still works, she is just confined to the desktop she was
+            // launched on, which is what every version before this did.
+            tracing::warn!(
+                "making the pet a panel: {err}; she will not show over full-screen apps"
+            );
+            return;
+        }
+    };
+
+    panel.set_level(PanelLevel::Status.value());
+    panel.set_collection_behavior(
+        CollectionBehavior::new()
+            .can_join_all_spaces()
+            .full_screen_auxiliary()
+            .value(),
+    );
+    // Additive rather than assigned: the style mask tao built carries the borderless-transparent
+    // window the pet is drawn in, and replacing it wholesale is what AppKit rejects on a live
+    // window.
+    if let Err(err) = panel.add_style_mask(StyleMask::empty().nonactivating_panel().value()) {
+        tracing::warn!("making the pet non-activating: {err}; clicking her may change Space");
+    }
+}
+
+/// Nothing to do off macOS: full-screen Spaces are a macOS idea, and `visibleOnAllWorkspaces`
+/// already covers the workspace switchers that Windows and Linux have.
+#[cfg(not(target_os = "macos"))]
+fn follow_fullscreen(_window: &WebviewWindow) {}
 
 /// Puts the pet away, or brings her back.
 ///

@@ -23,6 +23,13 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Only this crate reads config.toml, so `toml` stays local rather than hoisted to the workspace.
 toml = "1.1.6"
 
+# Showing the pet over a full-screen app means making her window an `NSPanel`, which no
+# cross-platform Tauri setting reaches and which is fiddlier than it sounds — the window tao
+# already built has to be reclassed in place. This is the maintained plugin for it, and it
+# re-exports the `objc2-app-kit` types the conversion is configured with.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-nspanel = "2.1"
+
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 

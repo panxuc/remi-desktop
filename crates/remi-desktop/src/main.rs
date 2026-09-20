@@ -64,7 +64,14 @@ fn main() {
     let config = Arc::new(Mutex::new(loaded));
     let saver = Saver::start();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // The pet window is reclassed into an `NSPanel` in `window::follow_fullscreen`, which is the
+    // only way macOS lets her draw over a full-screen app. The plugin owns the panel registry
+    // that conversion goes through, so it has to be registered before `setup` runs.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![renderer, pet_state, context_menu])
         .setup(move |app| {
             // `LSUIElement` in Info.plist is not enough on its own: tao sets the activation

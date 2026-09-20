@@ -20,6 +20,7 @@
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
         "shadow": false,
         "resizable": false,
         "skipTaskbar": true
