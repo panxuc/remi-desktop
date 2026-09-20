@@ -1,6 +1,10 @@
-//! Claude Code hands every hook a JSON object on stdin. Each event adds its own fields — a
-//! tool's name, its input, the permission mode — but all of them carry `session_id`, `cwd` and
-//! `transcript_path`, which is all we read.
+//! Codex hands every lifecycle hook a JSON object on stdin. Each event adds its own fields —
+//! `turn_id`, a tool's name and arguments — but all of them carry `session_id`, `cwd` and
+//! `transcript_path`, which is all we read. `transcript_path` is often null.
+//!
+//! These are the same three names Claude Code uses (`claude.rs`), and the two are parsed apart
+//! anyway: they are separate contracts with separate owners, and either can rename a field
+//! without asking the other.
 
 use std::path::PathBuf;
 
@@ -9,8 +13,7 @@ use serde::Deserialize;
 use super::{HookInput, normalize};
 use crate::record::SessionId;
 
-/// The fields every Claude Code hook payload shares. The rest, such as a tool's input and
-/// output, is ignored.
+/// The fields every Codex hook payload shares. The rest is ignored.
 #[derive(Deserialize)]
 struct Payload {
     session_id: Option<SessionId>,
@@ -35,30 +38,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_session_cwd_and_transcript_from_a_real_payload() {
+    fn reads_session_and_cwd_from_a_real_payload() {
         let json = br#"{
-            "session_id": "1a0e02ad-5127-41ae-b140-139fed68bc31",
-            "transcript_path": "/home/u/.claude/projects/-home-u-repos-remi-desktop/1a0e02ad-5127-41ae-b140-139fed68bc31.jsonl",
+            "session_id": "thread-1",
             "cwd": "/home/u/repos/remi-desktop",
-            "permission_mode": "default",
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Read",
-            "tool_input": {"file_path": "/home/u/repos/remi-desktop/Cargo.toml"}
+            "transcript_path": null,
+            "turn_id": "turn-1",
+            "hook_event_name": "PreToolUse"
         }"#;
 
         let input = parse(json).unwrap();
 
-        assert_eq!(
-            input.session,
-            Some(SessionId::new("1a0e02ad-5127-41ae-b140-139fed68bc31").unwrap())
-        );
+        assert_eq!(input.session, Some(SessionId::new("thread-1").unwrap()));
         assert_eq!(input.cwd.as_deref(), Some("remi-desktop"));
-        assert_eq!(
-            input.transcript,
-            Some(PathBuf::from(
-                "/home/u/.claude/projects/-home-u-repos-remi-desktop/1a0e02ad-5127-41ae-b140-139fed68bc31.jsonl"
-            ))
-        );
+        assert_eq!(input.transcript, None);
     }
 
     #[test]

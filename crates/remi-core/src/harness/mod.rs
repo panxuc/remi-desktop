@@ -3,6 +3,8 @@
 //! about the details that travel with it.
 
 mod claude;
+mod codex;
+mod normalize;
 
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -34,21 +36,31 @@ impl Harness {
 
     /// Reads what the harness passed on stdin about the session. Empty input is not an error
     /// and gives an empty [`HookInput`], so the hook can be run by hand without any.
-    pub fn read_input(self, mut stdin: impl Read) -> Result<HookInput, Error> {
+    ///
+    /// One arm per harness, each naming its own parser and its own error: what a harness sends
+    /// and how it says it is that harness's business, and a new one is a new arm rather than a
+    /// condition added to someone else's.
+    pub fn read_input(self, stdin: impl Read) -> Result<HookInput, Error> {
         match self {
-            Harness::ClaudeCode | Harness::Codex => {
-                let mut json = Vec::new();
-                stdin.read_to_end(&mut json).map_err(Error::Read)?;
-                claude::parse(&json).map_err(|err| match self {
-                    Harness::Codex => Error::Codex(err),
-                    _ => Error::ClaudeCode(err),
-                })
+            Harness::ClaudeCode => {
+                let json = read_json(stdin)?;
+                claude::parse(&json).map_err(Error::ClaudeCode)
+            }
+            Harness::Codex => {
+                let json = read_json(stdin)?;
+                codex::parse(&json).map_err(Error::Codex)
             }
             // The plugin passes everything as flags. Its stdin is never read, so a plugin that
             // leaves it open cannot keep the hook waiting.
             Harness::OpenCode => Ok(HookInput::default()),
         }
     }
+}
+
+fn read_json(mut stdin: impl Read) -> Result<Vec<u8>, Error> {
+    let mut json = Vec::new();
+    stdin.read_to_end(&mut json).map_err(Error::Read)?;
+    Ok(json)
 }
 
 /// What a harness said about the session an event belongs to. Every field is optional: flags
@@ -102,11 +114,20 @@ mod tests {
     }
 
     #[test]
-    fn codex_reads_the_shared_envelope_and_reports_its_own_errors() {
-        let input = Harness::Codex.read_input(&br#"{"session_id":"thread-1","cwd":"/repos/remi","transcript_path":null,"turn_id":"turn-1"}"#[..]).unwrap();
-        assert_eq!(input.session.unwrap().as_str(), "thread-1");
+    fn codex_reads_its_json_from_stdin() {
+        let stdin = br#"{"session_id":"thread-1","cwd":"/repos/remi","turn_id":"turn-1"}"#;
+        let input = Harness::Codex.read_input(&stdin[..]).unwrap();
+        assert_eq!(input.session, Some(SessionId::new("thread-1").unwrap()));
         assert_eq!(input.cwd.as_deref(), Some("remi"));
-        assert_eq!(input.transcript, None);
+    }
+
+    /// Each harness reports its own parse failures, so a message never names the wrong one.
+    #[test]
+    fn a_bad_payload_is_blamed_on_the_harness_that_sent_it() {
+        assert!(matches!(
+            Harness::ClaudeCode.read_input(&b"bad json"[..]),
+            Err(Error::ClaudeCode(_))
+        ));
         assert!(matches!(
             Harness::Codex.read_input(&b"bad json"[..]),
             Err(Error::Codex(_))

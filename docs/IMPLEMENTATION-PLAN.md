@@ -568,7 +568,9 @@ crates/remi-core/src/
 ├─ config.rs       # Config load/save
 ├─ harness/        # how the register gets WRITTEN — one file per harness
 │  ├─ mod.rs       # enum Harness, HookInput: which session an event belongs to (+ HarnessCaps, later)
+│  ├─ envelope.rs  # our rules, not a harness's: cwd -> last component, blank stdin is no input
 │  ├─ claude.rs    # stdin JSON -> HookInput {session, cwd, transcript}   (push)
+│  ├─ codex.rs     # its own contract, same three fields today: stdin JSON -> HookInput  (push)
 │  └─ opencode.rs  # not yet: the plugin passes flags, stdin is never read; SSE fallback later
 └─ source/         # how the PET READS — one file per transport
    ├─ mod.rs        # ConnectionId, SessionUpdate
